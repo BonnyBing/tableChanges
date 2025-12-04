@@ -582,6 +582,47 @@ table th {
   background: #f1f5f9;
 }
 
+.subtract-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 2px solid #e2e8f0;
+  padding-bottom: 8px;
+}
+
+.subtract-tab {
+  border: none;
+  background: none;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #6b7280;
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.subtract-tab:hover {
+  background: #f8fafc;
+  color: #1f2329;
+}
+
+.subtract-tab.active {
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.subtract-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -10px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #2563eb;
+}
+
 .toast-banner {
   position: fixed;
   right: 32px;

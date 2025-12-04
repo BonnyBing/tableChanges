@@ -72,6 +72,14 @@ interface ComparisonResult {
   comparedColumns: string[]
 }
 
+type SubtractResultType = 'onlyInA' | 'onlyInB' | 'common'
+
+interface SubtractResult {
+  type: SubtractResultType
+  fields: FeishuField[]
+  rows: TableRow[]
+}
+
 type CompareSide = 'base' | 'target'
 
 const fieldTypeOptions: { value: FieldType; label: string }[] = [
@@ -780,6 +788,19 @@ function App() {
   const [compareStatus, setCompareStatus] = useState('')
   const [compareLoading, setCompareLoading] = useState<CompareSide | null>(null)
 
+  const [subtractSheets, setSubtractSheets] = useState<{
+    base?: ParsedSheetData
+    target?: ParsedSheetData
+  }>({})
+  const [subtractKey, setSubtractKey] = useState('')
+  const [subtractResults, setSubtractResults] = useState<SubtractResult[]>([])
+  const [subtractStatus, setSubtractStatus] = useState('')
+  const [subtractLoading, setSubtractLoading] = useState<CompareSide | null>(
+    null
+  )
+  const [subtractActiveTab, setSubtractActiveTab] =
+    useState<SubtractResultType>('onlyInA')
+
   const hasData = rawRows.length > 0
   const compareKeyOptions = useMemo(() => {
     if (!compareSheets.base || !compareSheets.target) return []
@@ -798,6 +819,16 @@ function App() {
   const compareBase = compareSheets.base
   const compareTarget = compareSheets.target
   const compareReady = Boolean(compareBase && compareTarget)
+
+  const subtractBase = subtractSheets.base
+  const subtractTarget = subtractSheets.target
+  const subtractReady = Boolean(subtractBase && subtractTarget)
+  const subtractKeyOptions = useMemo(() => {
+    if (!subtractBase || !subtractTarget) return []
+    return subtractBase.headers.filter((header) =>
+      subtractTarget.headers.includes(header)
+    )
+  }, [subtractBase, subtractTarget])
 
   const errorStats = useMemo(() => {
     if (!rows.length) return { total: 0, affectedRows: 0 }
@@ -859,6 +890,35 @@ function App() {
       ) ?? compareKeyOptions[0]
     setCompareKey(preferred)
   }, [compareSheets, compareKey, compareKeyOptions])
+
+  useEffect(() => {
+    if (!subtractBase || !subtractTarget) {
+      if (subtractKey) {
+        setSubtractKey('')
+      }
+      return
+    }
+    if (
+      subtractKey &&
+      subtractBase.headers.includes(subtractKey) &&
+      subtractTarget.headers.includes(subtractKey)
+    ) {
+      return
+    }
+    if (!subtractKeyOptions.length) {
+      if (subtractKey) {
+        setSubtractKey('')
+      }
+      return
+    }
+    const preferred =
+      subtractKeyOptions.find(
+        (header) =>
+          normalizeKey(header).toLowerCase() ===
+          PRIMARY_FIELD_NAME.toLowerCase()
+      ) ?? subtractKeyOptions[0]
+    setSubtractKey(preferred)
+  }, [subtractBase, subtractTarget, subtractKey, subtractKeyOptions])
 
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const fileList = event.target.files
@@ -1039,23 +1099,60 @@ function App() {
         normalizeKey(column.key).toLowerCase() === normalizedPrimaryName
     )?.key
 
-    const primarySeen = new Set<string>()
-    const dedupedRawRows =
-      primaryColumnKey && rawRows.length
-        ? rawRows.filter((raw) => {
-            const value = sanitizeValue(raw[primaryColumnKey])
-            if (!value) return true
-            if (primarySeen.has(value)) {
-              return false
-            }
-            primarySeen.add(value)
-            return true
-          })
-        : rawRows
+    let mergedRawRows: Record<string, unknown>[] = []
+    let mergedCount = 0
+    let conflictCount = 0
 
-    const removedCount = rawRows.length - dedupedRawRows.length
+    if (primaryColumnKey && rawRows.length) {
+      const grouped = new Map<string, Record<string, unknown>[]>()
+      rawRows.forEach((raw) => {
+        const keyValue = sanitizeValue(raw[primaryColumnKey])
+        if (!keyValue) {
+          mergedRawRows.push(raw)
+          return
+        }
+        const existing = grouped.get(keyValue) || []
+        existing.push(raw)
+        grouped.set(keyValue, existing)
+      })
 
-    const mappedRows = dedupedRawRows.map<TableRow>((raw, index) => {
+      grouped.forEach((group) => {
+        if (group.length === 1) {
+          mergedRawRows.push(group[0])
+          return
+        }
+
+        mergedCount += group.length - 1
+        const merged: Record<string, unknown> = {}
+        const conflicts: string[] = []
+
+        columns.forEach((column) => {
+          const values = group
+            .map((row) => sanitizeValue(row[column.key]))
+            .filter(Boolean)
+          const uniqueValues = Array.from(new Set(values))
+
+          if (uniqueValues.length === 0) {
+            merged[column.key] = ''
+          } else if (uniqueValues.length === 1) {
+            merged[column.key] = uniqueValues[0]
+          } else {
+            merged[column.key] = uniqueValues.join(' | ')
+            conflicts.push(column.key)
+          }
+        })
+
+        if (conflicts.length) {
+          conflictCount++
+        }
+
+        mergedRawRows.push(merged)
+      })
+    } else {
+      mergedRawRows = rawRows
+    }
+
+    const mappedRows = mergedRawRows.map<TableRow>((raw, index) => {
       const record: TableRow = {
         rowId: `row-${index}`,
         values: {},
@@ -1081,18 +1178,23 @@ function App() {
 
     setRows(mappedRows)
     const { affectedRows } = errorStatsFromRows(mappedRows)
-    if (removedCount > 0 && primaryColumnKey) {
-      setStatus(
-        affectedRows
-          ? `已生成 ${mappedRows.length} 行，其中 ${removedCount} 行教育ID重复被忽略，${affectedRows} 行存在待修复数据`
-          : `已生成 ${mappedRows.length} 行（教育ID重复 ${removedCount} 行已忽略），可直接复制导出`
-      )
-    } else {
-      setStatus(
-        affectedRows
-          ? `已生成 ${mappedRows.length} 行，${affectedRows} 行存在待修复数据`
-          : `已生成 ${mappedRows.length} 行，可直接复制导出`
-      )
+
+    let statusMsg = `已生成 ${mappedRows.length} 行`
+    if (mergedCount > 0) {
+      statusMsg += `，合并了 ${mergedCount} 条重复记录`
+    }
+    if (conflictCount > 0) {
+      statusMsg += `，${conflictCount} 条存在字段冲突（已用 | 分隔）`
+    }
+    if (affectedRows > 0) {
+      statusMsg += `，${affectedRows} 行存在待修复数据`
+    } else if (mergedCount === 0 && conflictCount === 0) {
+      statusMsg += `，可直接复制导出`
+    }
+
+    setStatus(statusMsg)
+    if (conflictCount > 0) {
+      showToast(`发现 ${conflictCount} 条记录存在字段冲突，请检查`)
     }
   }
 
@@ -1274,6 +1376,248 @@ function App() {
     setCompareKey('')
     setCompareLoading(null)
     setCompareStatus('已清空对比结果')
+  }
+
+  const handleSubtractFileChange = async (
+    event: ChangeEvent<HTMLInputElement>,
+    side: CompareSide
+  ) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setSubtractLoading(side)
+    setSubtractStatus('正在解析文件...')
+    try {
+      const parsed = await parseFileToSheetData(file)
+      if (!parsed) {
+        setSubtractStatus('未读取到有效数据，请确认表头与数据行')
+        return
+      }
+      setSubtractSheets((prev) => ({
+        ...prev,
+        [side]: parsed,
+      }))
+      setSubtractResults([])
+      setSubtractStatus(
+        `${side === 'base' ? 'A' : 'B'}表 ${parsed.fileName} 已载入（${
+          parsed.rows.length
+        } 行）`
+      )
+    } catch (error) {
+      console.error(error)
+      setSubtractStatus('文件解析失败，请检查文件格式')
+    } finally {
+      setSubtractLoading(null)
+      event.target.value = ''
+    }
+  }
+
+  const handleRunSubtract = () => {
+    if (!subtractBase || !subtractTarget) {
+      setSubtractStatus('请先上传A表和B表')
+      return
+    }
+    if (!subtractKey) {
+      setSubtractStatus('请选择用于匹配的关键字段')
+      return
+    }
+
+    const baseKeys = new Map<string, Record<string, string>>()
+    subtractBase.rows.forEach((row) => {
+      const keyValue = sanitizeValue(row[subtractKey])
+      if (keyValue) {
+        baseKeys.set(keyValue, row)
+      }
+    })
+
+    const targetKeys = new Map<string, Record<string, string>>()
+    subtractTarget.rows.forEach((row) => {
+      const keyValue = sanitizeValue(row[subtractKey])
+      if (keyValue) {
+        targetKeys.set(keyValue, row)
+      }
+    })
+
+    const onlyInARows: Record<string, string>[] = []
+    const onlyInBRows: Record<string, string>[] = []
+    const commonRows: Record<string, string>[] = []
+
+    baseKeys.forEach((row, key) => {
+      if (targetKeys.has(key)) {
+        commonRows.push(row)
+      } else {
+        onlyInARows.push(row)
+      }
+    })
+
+    targetKeys.forEach((row, key) => {
+      if (!baseKeys.has(key)) {
+        onlyInBRows.push(row)
+      }
+    })
+
+    const buildResultData = (
+      rows: Record<string, string>[],
+      headers: string[],
+      typePrefix: string
+    ): SubtractResult => {
+      const columns = buildColumns(
+        rows.map((row) => {
+          const obj: Record<string, unknown> = {}
+          Object.entries(row).forEach(([k, v]) => {
+            obj[k] = v
+          })
+          return obj
+        }),
+        headers
+      )
+
+      const fields = buildImportedFieldLayout(
+        columns,
+        rows.map((row) => {
+          const obj: Record<string, unknown> = {}
+          Object.entries(row).forEach(([k, v]) => {
+            obj[k] = v
+          })
+          return obj
+        })
+      )
+
+      const mappedRows = rows.map<TableRow>((raw, index) => {
+        const record: TableRow = {
+          rowId: `${typePrefix}-${index}`,
+          values: {},
+          errors: {},
+        }
+        fields.forEach((field) => {
+          const sourceValue = field.sourceKey
+            ? sanitizeValue(raw[field.sourceKey])
+            : ''
+          const normalized = normalizeForType(sourceValue, field.type)
+          const mapped = applyValueMappings(normalized, field)
+          const adjusted = applyFixedLength(mapped, field)
+          const error = validateValue(adjusted, field)
+          record.values[field.id] = adjusted
+          if (error) {
+            record.errors[field.id] = error
+          }
+        })
+        return record
+      })
+
+      return {
+        type: typePrefix as SubtractResultType,
+        fields,
+        rows: mappedRows,
+      }
+    }
+
+    const results: SubtractResult[] = [
+      buildResultData(onlyInARows, subtractBase.headers, 'onlyInA'),
+      buildResultData(onlyInBRows, subtractTarget.headers, 'onlyInB'),
+      buildResultData(commonRows, subtractBase.headers, 'common'),
+    ]
+
+    setSubtractResults(results)
+    setSubtractStatus(
+      `运算完成：A独有 ${onlyInARows.length} 行、B独有 ${onlyInBRows.length} 行、共同 ${commonRows.length} 行`
+    )
+    showToast(
+      `已生成三类结果，共 ${
+        onlyInARows.length + onlyInBRows.length + commonRows.length
+      } 行`
+    )
+  }
+
+  const resetSubtract = () => {
+    setSubtractSheets({})
+    setSubtractKey('')
+    setSubtractResults([])
+    setSubtractLoading(null)
+    setSubtractStatus('已清空差集区')
+    setSubtractActiveTab('onlyInA')
+  }
+
+  const activeSubtractResult = useMemo(() => {
+    return subtractResults.find((r) => r.type === subtractActiveTab)
+  }, [subtractResults, subtractActiveTab])
+
+  const updateSubtractCell = (
+    rowId: string,
+    fieldId: string,
+    value: string
+  ) => {
+    setSubtractResults((prev) =>
+      prev.map((result) => {
+        if (result.type !== subtractActiveTab) return result
+        const field = result.fields.find((item) => item.id === fieldId)
+        if (!field) return result
+        const updatedRows = result.rows.map((row) => {
+          if (row.rowId !== rowId) return row
+          const normalized =
+            field.type === 'number' ? value.replace(/[^\d.-]/g, '') : value
+          const mapped = applyValueMappings(normalized, field)
+          const adjusted = applyFixedLength(mapped, field)
+          const error = validateValue(adjusted, field)
+          return {
+            ...row,
+            values: {
+              ...row.values,
+              [fieldId]: adjusted,
+            },
+            errors: {
+              ...row.errors,
+              [fieldId]: error,
+            },
+          }
+        })
+        return { ...result, rows: updatedRows }
+      })
+    )
+  }
+
+  const handleCopySubtractTable = async () => {
+    if (!activeSubtractResult || !activeSubtractResult.rows.length) {
+      setSubtractStatus('暂无可复制的数据')
+      return
+    }
+    const html = buildHtmlTable(
+      activeSubtractResult.fields,
+      activeSubtractResult.rows,
+      true
+    )
+    const tsv = buildTsv(
+      activeSubtractResult.fields,
+      activeSubtractResult.rows,
+      true
+    )
+
+    try {
+      await copyRichContent(html, tsv)
+      setSubtractStatus('已复制至剪贴板，可直接粘贴到 Excel/飞书')
+      showToast('复制成功')
+    } catch (error) {
+      console.error(error)
+      fallbackCopy(tsv)
+      setSubtractStatus('已复制为文本格式')
+      showToast('复制为纯文本', 3200)
+    }
+  }
+
+  const handleDownloadSubtractExcel = () => {
+    if (!activeSubtractResult || !activeSubtractResult.rows.length) {
+      setSubtractStatus('暂无可导出的数据')
+      return
+    }
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(
+        buildJsonRows(activeSubtractResult.fields, activeSubtractResult.rows)
+      ),
+      'Sheet1'
+    )
+    XLSX.writeFile(workbook, `subtract-${subtractActiveTab}.xlsx`)
+    showToast('Excel 已下载')
   }
 
   return (
@@ -2071,6 +2415,254 @@ function App() {
         ) : (
           <div className="empty-state">
             <p>上传基准表与对比表后可按关键字段自动比对。</p>
+          </div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>6. 表格差集运算（A - B）</h2>
+            <p className="panel-subtitle">
+              上传A表和B表，基于关键字段生成"A表有但B表没有"的记录
+            </p>
+          </div>
+          <div className="panel-actions">
+            <button
+              className="ghost-button"
+              onClick={resetSubtract}
+              disabled={
+                !subtractBase && !subtractTarget && !subtractResults.length
+              }
+            >
+              清空差集区
+            </button>
+          </div>
+        </div>
+
+        <div className="compare-grid">
+          <div className="compare-card">
+            <h3>A 表（被减数）</h3>
+            <label className="upload-button">
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(event) => handleSubtractFileChange(event, 'base')}
+                disabled={subtractLoading === 'base'}
+              />
+              {subtractLoading === 'base' ? '解析中...' : '上传 A 表'}
+            </label>
+            {subtractBase ? (
+              <ul className="compare-meta">
+                <li>文件：{subtractBase.fileName}</li>
+                <li>行数：{subtractBase.rows.length}</li>
+                <li>字段：{subtractBase.headers.length}</li>
+              </ul>
+            ) : (
+              <p className="compare-placeholder">请选择 A 表</p>
+            )}
+          </div>
+          <div className="compare-card">
+            <h3>B 表（减数）</h3>
+            <label className="upload-button">
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(event) => handleSubtractFileChange(event, 'target')}
+                disabled={subtractLoading === 'target'}
+              />
+              {subtractLoading === 'target' ? '解析中...' : '上传 B 表'}
+            </label>
+            {subtractTarget ? (
+              <ul className="compare-meta">
+                <li>文件：{subtractTarget.fileName}</li>
+                <li>行数：{subtractTarget.rows.length}</li>
+                <li>字段：{subtractTarget.headers.length}</li>
+              </ul>
+            ) : (
+              <p className="compare-placeholder">请选择 B 表</p>
+            )}
+          </div>
+        </div>
+
+        <div className="status-banner">
+          <span>
+            {subtractStatus || '准备好两张表后，选择关键字段并点击"计算差集"。'}
+          </span>
+          {subtractResults.length > 0 && (
+            <span className="success-pill">
+              已生成
+              {subtractResults.reduce((sum, r) => sum + r.rows.length, 0)}{' '}
+              行结果
+            </span>
+          )}
+        </div>
+
+        {subtractReady ? (
+          subtractKeyOptions.length ? (
+            <Fragment>
+              <div className="compare-controls">
+                <label>
+                  关键字段
+                  <select
+                    value={subtractKey}
+                    onChange={(event) => setSubtractKey(event.target.value)}
+                  >
+                    {subtractKeyOptions.map((header) => (
+                      <option key={header} value={header}>
+                        {header}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="primary-button"
+                  onClick={handleRunSubtract}
+                  disabled={!subtractKey || Boolean(subtractLoading)}
+                >
+                  计算差集
+                </button>
+              </div>
+              {subtractResults.length > 0 && (
+                <Fragment>
+                  <div className="subtract-tabs">
+                    <button
+                      className={`subtract-tab ${
+                        subtractActiveTab === 'onlyInA' ? 'active' : ''
+                      }`}
+                      onClick={() => setSubtractActiveTab('onlyInA')}
+                    >
+                      A 独有 (
+                      {
+                        subtractResults.find((r) => r.type === 'onlyInA')?.rows
+                          .length
+                      }
+                      )
+                    </button>
+                    <button
+                      className={`subtract-tab ${
+                        subtractActiveTab === 'onlyInB' ? 'active' : ''
+                      }`}
+                      onClick={() => setSubtractActiveTab('onlyInB')}
+                    >
+                      B 独有 (
+                      {
+                        subtractResults.find((r) => r.type === 'onlyInB')?.rows
+                          .length
+                      }
+                      )
+                    </button>
+                    <button
+                      className={`subtract-tab ${
+                        subtractActiveTab === 'common' ? 'active' : ''
+                      }`}
+                      onClick={() => setSubtractActiveTab('common')}
+                    >
+                      共同数据 (
+                      {
+                        subtractResults.find((r) => r.type === 'common')?.rows
+                          .length
+                      }
+                      )
+                    </button>
+                  </div>
+                  <div
+                    className="panel-actions gap"
+                    style={{ marginBottom: 16 }}
+                  >
+                    <button
+                      className="primary-button"
+                      onClick={handleCopySubtractTable}
+                      disabled={!activeSubtractResult?.rows.length}
+                    >
+                      复制当前表格
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={handleDownloadSubtractExcel}
+                      disabled={!activeSubtractResult?.rows.length}
+                    >
+                      下载 Excel
+                    </button>
+                  </div>
+                  {activeSubtractResult &&
+                  activeSubtractResult.rows.length > 0 ? (
+                    <div className="data-table-wrapper">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th style={{ width: 60 }}>序号</th>
+                            {activeSubtractResult.fields.map((field) => (
+                              <th key={field.id}>
+                                {field.name}
+                                {field.required && (
+                                  <span className="required">*</span>
+                                )}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeSubtractResult.rows.map((row, rowIndex) => {
+                            const hasRowError = Object.values(row.errors).some(
+                              Boolean
+                            )
+                            return (
+                              <tr
+                                key={row.rowId}
+                                className={
+                                  hasRowError ? 'row-error' : undefined
+                                }
+                              >
+                                <td>{rowIndex + 1}</td>
+                                {activeSubtractResult.fields.map((field) => {
+                                  const cellError = row.errors[field.id]
+                                  const cellValue = row.values[field.id] ?? ''
+                                  return (
+                                    <td key={`${row.rowId}-${field.id}`}>
+                                      <div className="cell-editor">
+                                        <input
+                                          type="text"
+                                          value={cellValue}
+                                          onChange={(event) =>
+                                            updateSubtractCell(
+                                              row.rowId,
+                                              field.id,
+                                              event.target.value
+                                            )
+                                          }
+                                        />
+                                        {cellError && (
+                                          <span className="cell-error">
+                                            {cellError}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                  )
+                                })}
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="empty-state">
+                      <p>当前分类没有数据</p>
+                    </div>
+                  )}
+                </Fragment>
+              )}
+            </Fragment>
+          ) : (
+            <div className="empty-state">
+              <p>两张表没有相同的字段，请确认表头是否一致。</p>
+            </div>
+          )
+        ) : (
+          <div className="empty-state">
+            <p>上传 A 表和 B 表后可按关键字段计算差集。</p>
           </div>
         )}
       </section>

@@ -1,6 +1,8 @@
 import type { ChangeEvent } from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
+import ReactECharts from 'echarts-for-react'
+import type { EChartsOption } from 'echarts'
 import './App.css'
 
 type FieldType =
@@ -81,6 +83,17 @@ interface SubtractResult {
 }
 
 type CompareSide = 'base' | 'target'
+
+type ChartType = 'pie' | 'bar' | 'line'
+type PieLabelMode = 'tooltip' | 'label'
+
+interface ChartConfig {
+  type: ChartType
+  categoryField: string
+  valueField: string
+  title: string
+  pieLabelMode: PieLabelMode
+}
 
 const fieldTypeOptions: { value: FieldType; label: string }[] = [
   { value: 'text', label: '文本' },
@@ -801,6 +814,16 @@ function App() {
   const [subtractActiveTab, setSubtractActiveTab] =
     useState<SubtractResultType>('onlyInA')
 
+  const [chartData, setChartData] = useState<ParsedSheetData | null>(null)
+  const [chartConfig, setChartConfig] = useState<ChartConfig>({
+    type: 'bar',
+    categoryField: '',
+    valueField: '',
+    title: '数据图表',
+    pieLabelMode: 'tooltip',
+  })
+  const [chartLoading, setChartLoading] = useState(false)
+
   const hasData = rawRows.length > 0
   const compareKeyOptions = useMemo(() => {
     if (!compareSheets.base || !compareSheets.target) return []
@@ -841,6 +864,120 @@ function App() {
     ).length
     return { total, affectedRows }
   }, [rows])
+
+  const chartFieldOptions = useMemo(() => {
+    if (!chartData) return []
+    return chartData.headers
+  }, [chartData])
+
+  const chartOption = useMemo((): EChartsOption | null => {
+    if (!chartData || !chartConfig.categoryField || !chartConfig.valueField) {
+      return null
+    }
+
+    const categories: string[] = []
+    const values: number[] = []
+
+    chartData.rows.forEach((row) => {
+      const category = sanitizeValue(row[chartConfig.categoryField])
+      const value = sanitizeValue(row[chartConfig.valueField])
+      if (category && value) {
+        categories.push(category)
+        const numValue = Number(value.replace(/,/g, ''))
+        values.push(Number.isNaN(numValue) ? 0 : numValue)
+      }
+    })
+
+    if (chartConfig.type === 'pie') {
+      const showLabel = chartConfig.pieLabelMode === 'label'
+      return {
+        title: {
+          text: chartConfig.title,
+          left: 'center',
+        },
+        tooltip: {
+          trigger: 'item',
+          formatter: '{b}: {c} ({d}%)',
+        },
+        legend: {
+          orient: 'vertical',
+          left: 'left',
+        },
+        series: [
+          {
+            type: 'pie',
+            radius: '50%',
+            data: categories.map((name, index) => ({
+              name,
+              value: values[index],
+            })),
+            label: {
+              show: showLabel,
+              formatter: showLabel ? '{b}: {c} ({d}%)' : '{b}',
+            },
+            emphasis: {
+              itemStyle: {
+                shadowBlur: 10,
+                shadowOffsetX: 0,
+                shadowColor: 'rgba(0, 0, 0, 0.5)',
+              },
+            },
+          },
+        ],
+      }
+    }
+
+    if (chartConfig.type === 'line') {
+      return {
+        title: {
+          text: chartConfig.title,
+        },
+        tooltip: {
+          trigger: 'axis',
+        },
+        xAxis: {
+          type: 'category',
+          data: categories,
+        },
+        yAxis: {
+          type: 'value',
+        },
+        series: [
+          {
+            type: 'line',
+            data: values,
+            smooth: true,
+          },
+        ],
+      }
+    }
+
+    // bar chart
+    return {
+      title: {
+        text: chartConfig.title,
+      },
+      tooltip: {
+        trigger: 'axis',
+      },
+      xAxis: {
+        type: 'category',
+        data: categories,
+        axisLabel: {
+          rotate: categories.length > 10 ? 45 : 0,
+        },
+      },
+      yAxis: {
+        type: 'value',
+      },
+      series: [
+        {
+          type: 'bar',
+          data: values,
+        },
+      ],
+    }
+  }, [chartData, chartConfig])
 
   const showToast = (message: string, duration = 2600) => {
     if (toastTimerRef.current) {
@@ -1618,6 +1755,50 @@ function App() {
     )
     XLSX.writeFile(workbook, `subtract-${subtractActiveTab}.xlsx`)
     showToast('Excel 已下载')
+  }
+
+  const handleChartFileChange = async (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setChartLoading(true)
+    try {
+      const parsed = await parseFileToSheetData(file)
+      if (!parsed) {
+        showToast('未读取到有效数据，请确认表头与数据行')
+        return
+      }
+      setChartData(parsed)
+
+      // 自动选择第一个字段作为分类，第二个数字字段作为值
+      if (parsed.headers.length >= 2) {
+        setChartConfig((prev) => ({
+          ...prev,
+          categoryField: parsed.headers[0],
+          valueField: parsed.headers[1],
+        }))
+      }
+
+      showToast(`已载入 ${parsed.fileName}（${parsed.rows.length} 行）`)
+    } catch (error) {
+      console.error(error)
+      showToast('文件解析失败，请检查文件格式')
+    } finally {
+      setChartLoading(false)
+      event.target.value = ''
+    }
+  }
+
+  const resetChart = () => {
+    setChartData(null)
+    setChartConfig({
+      type: 'bar',
+      categoryField: '',
+      valueField: '',
+      title: '数据图表',
+      pieLabelMode: 'tooltip',
+    })
   }
 
   return (
@@ -2663,6 +2844,154 @@ function App() {
         ) : (
           <div className="empty-state">
             <p>上传 A 表和 B 表后可按关键字段计算差集。</p>
+          </div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>7. 数据可视化</h2>
+            <p className="panel-subtitle">
+              上传表格数据，自动生成饼图、柱状图或折线图
+            </p>
+          </div>
+          <div className="panel-actions">
+            <button
+              className="ghost-button"
+              onClick={resetChart}
+              disabled={!chartData}
+            >
+              清空图表
+            </button>
+          </div>
+        </div>
+
+        <div className="chart-upload-section">
+          <label className="upload-button">
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={handleChartFileChange}
+              disabled={chartLoading}
+            />
+            {chartLoading ? '解析中...' : '上传数据文件'}
+          </label>
+          {chartData && (
+            <div className="chart-file-info">
+              <span>文件：{chartData.fileName}</span>
+              <span>行数：{chartData.rows.length}</span>
+              <span>字段：{chartData.headers.length}</span>
+            </div>
+          )}
+        </div>
+
+        {chartData ? (
+          <Fragment>
+            <div className="chart-controls">
+              <label>
+                图表类型
+                <select
+                  value={chartConfig.type}
+                  onChange={(event) =>
+                    setChartConfig((prev) => ({
+                      ...prev,
+                      type: event.target.value as ChartType,
+                    }))
+                  }
+                >
+                  <option value="bar">柱状图</option>
+                  <option value="line">折线图</option>
+                  <option value="pie">饼图</option>
+                </select>
+              </label>
+              <label>
+                分类字段（X轴 / 饼图标签）
+                <select
+                  value={chartConfig.categoryField}
+                  onChange={(event) =>
+                    setChartConfig((prev) => ({
+                      ...prev,
+                      categoryField: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="">请选择...</option>
+                  {chartFieldOptions.map((field) => (
+                    <option key={field} value={field}>
+                      {field}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                数值字段（Y轴 / 饼图数值）
+                <select
+                  value={chartConfig.valueField}
+                  onChange={(event) =>
+                    setChartConfig((prev) => ({
+                      ...prev,
+                      valueField: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="">请选择...</option>
+                  {chartFieldOptions.map((field) => (
+                    <option key={field} value={field}>
+                      {field}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                图表标题
+                <input
+                  type="text"
+                  value={chartConfig.title}
+                  onChange={(event) =>
+                    setChartConfig((prev) => ({
+                      ...prev,
+                      title: event.target.value,
+                    }))
+                  }
+                  placeholder="请输入图表标题"
+                />
+              </label>
+              {chartConfig.type === 'pie' && (
+                <label>
+                  饼图标签模式
+                  <select
+                    value={chartConfig.pieLabelMode}
+                    onChange={(event) =>
+                      setChartConfig((prev) => ({
+                        ...prev,
+                        pieLabelMode: event.target.value as PieLabelMode,
+                      }))
+                    }
+                  >
+                    <option value="tooltip">鼠标悬浮显示</option>
+                    <option value="label">直接显示在标签</option>
+                  </select>
+                </label>
+              )}
+            </div>
+            {chartOption ? (
+              <div className="chart-container">
+                <ReactECharts
+                  option={chartOption}
+                  style={{ height: '500px', width: '100%' }}
+                />
+              </div>
+            ) : (
+              <div className="empty-state">
+                <p>请选择分类字段和数值字段以生成图表</p>
+              </div>
+            )}
+          </Fragment>
+        ) : (
+          <div className="empty-state">
+            <p>上传包含数据的 Excel/CSV 文件开始可视化</p>
+            <span>建议格式：第一列为分类名称，第二列为数值</span>
           </div>
         )}
       </section>

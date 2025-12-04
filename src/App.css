@@ -630,6 +630,61 @@ table th {
   background: #2563eb;
 }
 
+.chart-upload-section {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.chart-file-info {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  color: #6b7280;
+  flex-wrap: wrap;
+}
+
+.chart-file-info span {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #f1f5f9;
+}
+
+.chart-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.chart-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  color: #475569;
+  font-weight: 500;
+}
+
+.chart-controls input,
+.chart-controls select {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.chart-container {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  background: #fff;
+}
+
 .toast-banner {
   position: fixed;
   right: 32px;

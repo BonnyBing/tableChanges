@@ -42,6 +42,38 @@ interface TableRow {
   errors: Record<string, string | undefined>
 }
 
+interface ParsedSheetData {
+  fileName: string
+  headers: string[]
+  rows: Record<string, string>[]
+}
+
+interface RowDifference {
+  key: string
+  diffs: Array<{
+    column: string
+    baseValue: string
+    targetValue: string
+  }>
+}
+
+interface ComparisonResult {
+  onlyInBase: string[]
+  onlyInTarget: string[]
+  mismatchedRows: RowDifference[]
+  duplicateKeys: {
+    base: string[]
+    target: string[]
+  }
+  missingKeyRows: {
+    base: number
+    target: number
+  }
+  comparedColumns: string[]
+}
+
+type CompareSide = 'base' | 'target'
+
 const fieldTypeOptions: { value: FieldType; label: string }[] = [
   { value: 'text', label: '文本' },
   { value: 'number', label: '数字' },
@@ -376,6 +408,104 @@ const parseSheetRows = (sheet: XLSX.WorkSheet) => {
   return { headers: normalizedHeaders, rows }
 }
 
+const convertRowToStringRecord = (row: Record<string, unknown>) => {
+  const next: Record<string, string> = {}
+  Object.entries(row).forEach(([key, value]) => {
+    next[key] = sanitizeValue(value)
+  })
+  return next
+}
+
+const parseFileToSheetData = async (
+  file: File
+): Promise<ParsedSheetData | null> => {
+  const data = await file.arrayBuffer()
+  const workbook = XLSX.read(data, { type: 'array' })
+  const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
+  if (!firstSheet) return null
+  const { headers, rows } = parseSheetRows(firstSheet)
+  if (!headers.length || !rows.length) return null
+  return {
+    fileName: file.name,
+    headers,
+    rows: rows.map((row) => convertRowToStringRecord(row)),
+  }
+}
+
+const buildKeyIndex = (rows: Record<string, string>[], key: string) => {
+  const map = new Map<string, Record<string, string>>()
+  const duplicates = new Set<string>()
+  let missingKey = 0
+  rows.forEach((row) => {
+    const keyValue = sanitizeValue(row[key])
+    if (!keyValue) {
+      missingKey += 1
+      return
+    }
+    if (map.has(keyValue)) {
+      duplicates.add(keyValue)
+      return
+    }
+    map.set(keyValue, row)
+  })
+  return {
+    map,
+    duplicates: Array.from(duplicates),
+    missingKey,
+  }
+}
+
+const buildComparisonResult = (
+  base: ParsedSheetData,
+  target: ParsedSheetData,
+  key: string
+): ComparisonResult => {
+  const baseIndex = buildKeyIndex(base.rows, key)
+  const targetIndex = buildKeyIndex(target.rows, key)
+  const comparedColumns = Array.from(
+    new Set([...base.headers, ...target.headers])
+  )
+  const onlyInBase: string[] = []
+  const mismatchedRows: RowDifference[] = []
+  baseIndex.map.forEach((baseRow, keyValue) => {
+    const targetRow = targetIndex.map.get(keyValue)
+    if (!targetRow) {
+      onlyInBase.push(keyValue)
+      return
+    }
+    const diffs: RowDifference['diffs'] = []
+    comparedColumns.forEach((column) => {
+      const baseValue = sanitizeValue(baseRow[column])
+      const targetValue = sanitizeValue(targetRow[column])
+      if (baseValue !== targetValue) {
+        diffs.push({ column, baseValue, targetValue })
+      }
+    })
+    if (diffs.length) {
+      mismatchedRows.push({ key: keyValue, diffs })
+    }
+  })
+  const onlyInTarget = Array.from(targetIndex.map.keys()).filter(
+    (keyValue) => !baseIndex.map.has(keyValue)
+  )
+  const sortByKey = (a: string, b: string) =>
+    a.localeCompare(b, 'zh-Hans-CN', { numeric: true })
+  return {
+    onlyInBase: onlyInBase.sort(sortByKey),
+    onlyInTarget: onlyInTarget.sort(sortByKey),
+    mismatchedRows: mismatchedRows.sort((a, b) => sortByKey(a.key, b.key)),
+    duplicateKeys: {
+      base: baseIndex.duplicates,
+      target: targetIndex.duplicates,
+    },
+    missingKeyRows: {
+      base: baseIndex.missingKey,
+      target: targetIndex.missingKey,
+    },
+    comparedColumns,
+  }
+}
+
 const validateValue = (value: string, field: FeishuField) => {
   if (!value) {
     return field.required ? '必填字段为空' : undefined
@@ -620,8 +750,34 @@ function App() {
   const [includeHeaderInCopy, setIncludeHeaderInCopy] = useState(true)
   const [toastMessage, setToastMessage] = useState('')
   const toastTimerRef = useRef<number | null>(null)
+  const [compareSheets, setCompareSheets] = useState<{
+    base?: ParsedSheetData
+    target?: ParsedSheetData
+  }>({})
+  const [compareKey, setCompareKey] = useState('')
+  const [comparisonResult, setComparisonResult] =
+    useState<ComparisonResult | null>(null)
+  const [compareStatus, setCompareStatus] = useState('')
+  const [compareLoading, setCompareLoading] = useState<CompareSide | null>(null)
 
   const hasData = rawRows.length > 0
+  const compareKeyOptions = useMemo(() => {
+    if (!compareSheets.base || !compareSheets.target) return []
+    return compareSheets.base.headers.filter((header) =>
+      compareSheets.target?.headers.includes(header)
+    )
+  }, [compareSheets])
+  const compareDiffCount = useMemo(() => {
+    if (!comparisonResult) return 0
+    return (
+      comparisonResult.onlyInBase.length +
+      comparisonResult.onlyInTarget.length +
+      comparisonResult.mismatchedRows.length
+    )
+  }, [comparisonResult])
+  const compareBase = compareSheets.base
+  const compareTarget = compareSheets.target
+  const compareReady = Boolean(compareBase && compareTarget)
 
   const errorStats = useMemo(() => {
     if (!rows.length) return { total: 0, affectedRows: 0 }
@@ -654,6 +810,35 @@ function App() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (!compareSheets.base || !compareSheets.target) {
+      if (compareKey) {
+        setCompareKey('')
+      }
+      return
+    }
+    if (
+      compareKey &&
+      compareSheets.base.headers.includes(compareKey) &&
+      compareSheets.target.headers.includes(compareKey)
+    ) {
+      return
+    }
+    if (!compareKeyOptions.length) {
+      if (compareKey) {
+        setCompareKey('')
+      }
+      return
+    }
+    const preferred =
+      compareKeyOptions.find(
+        (header) =>
+          normalizeKey(header).toLowerCase() ===
+          PRIMARY_FIELD_NAME.toLowerCase()
+      ) ?? compareKeyOptions[0]
+    setCompareKey(preferred)
+  }, [compareSheets, compareKey, compareKeyOptions])
 
   const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const fileList = event.target.files
@@ -1006,6 +1191,73 @@ function App() {
     setFields([])
     setRows([])
     setStatus('已清空当前数据')
+  }
+
+  const handleCompareFileChange = async (
+    event: ChangeEvent<HTMLInputElement>,
+    side: CompareSide
+  ) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setCompareLoading(side)
+    setCompareStatus('正在解析对比文件...')
+    try {
+      const parsed = await parseFileToSheetData(file)
+      if (!parsed) {
+        setCompareStatus('未读取到有效数据，请确认表头与数据行')
+        return
+      }
+      setCompareSheets((prev) => ({
+        ...prev,
+        [side]: parsed,
+      }))
+      setComparisonResult(null)
+      setCompareStatus(
+        `${side === 'base' ? '基准' : '对比'}表 ${parsed.fileName} 已载入（${
+          parsed.rows.length
+        } 行）`
+      )
+    } catch (error) {
+      console.error(error)
+      setCompareStatus('对比文件解析失败，请检查文件格式')
+    } finally {
+      setCompareLoading(null)
+      event.target.value = ''
+    }
+  }
+
+  const handleRunComparison = () => {
+    if (!compareSheets.base || !compareSheets.target) {
+      setCompareStatus('请先上传需要比对的两张表')
+      return
+    }
+    if (!compareKey) {
+      setCompareStatus('请选择一个用于比对的关键字段')
+      return
+    }
+    const result = buildComparisonResult(
+      compareSheets.base,
+      compareSheets.target,
+      compareKey
+    )
+    setComparisonResult(result)
+    const diffCount =
+      result.onlyInBase.length +
+      result.onlyInTarget.length +
+      result.mismatchedRows.length
+    setCompareStatus(
+      diffCount
+        ? `比对完成，发现 ${diffCount} 处差异（基准多 ${result.onlyInBase.length} 条，对比多 ${result.onlyInTarget.length} 条，字段不一致 ${result.mismatchedRows.length} 条）`
+        : '比对完成，两个文件完全一致'
+    )
+  }
+
+  const resetComparison = () => {
+    setCompareSheets({})
+    setComparisonResult(null)
+    setCompareKey('')
+    setCompareLoading(null)
+    setCompareStatus('已清空对比结果')
   }
 
   return (
@@ -1573,6 +1825,219 @@ function App() {
           </section>
         </Fragment>
       )}
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>5. 双表数据对比</h2>
+            <p className="panel-subtitle">
+              上传两张 Excel/CSV，自动识别缺失、重复与字段不一致
+            </p>
+          </div>
+          <div className="panel-actions">
+            <button
+              className="ghost-button"
+              onClick={resetComparison}
+              disabled={!compareBase && !compareTarget && !comparisonResult}
+            >
+              清空对比区
+            </button>
+          </div>
+        </div>
+
+        <div className="compare-grid">
+          <div className="compare-card">
+            <h3>基准表</h3>
+            <label className="upload-button">
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(event) => handleCompareFileChange(event, 'base')}
+                disabled={compareLoading === 'base'}
+              />
+              {compareLoading === 'base' ? '解析中...' : '上传基准表'}
+            </label>
+            {compareBase ? (
+              <ul className="compare-meta">
+                <li>文件：{compareBase.fileName}</li>
+                <li>行数：{compareBase.rows.length}</li>
+                <li>字段：{compareBase.headers.length}</li>
+              </ul>
+            ) : (
+              <p className="compare-placeholder">请选择作为参考的文件</p>
+            )}
+          </div>
+          <div className="compare-card">
+            <h3>对比表</h3>
+            <label className="upload-button">
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(event) => handleCompareFileChange(event, 'target')}
+                disabled={compareLoading === 'target'}
+              />
+              {compareLoading === 'target' ? '解析中...' : '上传对比表'}
+            </label>
+            {compareTarget ? (
+              <ul className="compare-meta">
+                <li>文件：{compareTarget.fileName}</li>
+                <li>行数：{compareTarget.rows.length}</li>
+                <li>字段：{compareTarget.headers.length}</li>
+              </ul>
+            ) : (
+              <p className="compare-placeholder">请选择需要比对的文件</p>
+            )}
+          </div>
+        </div>
+
+        <div className="status-banner">
+          <span>
+            {compareStatus ||
+              '准备好两张表后，选择关键字段并点击“开始比对”。'}
+          </span>
+          {comparisonResult && (
+            <span className={compareDiffCount ? 'error-pill' : 'success-pill'}>
+              {compareDiffCount ? `发现 ${compareDiffCount} 处差异` : '完全一致'}
+            </span>
+          )}
+        </div>
+
+        {compareReady ? (
+          compareKeyOptions.length ? (
+            <Fragment>
+              <div className="compare-controls">
+                <label>
+                  关键字段
+                  <select
+                    value={compareKey}
+                    onChange={(event) => setCompareKey(event.target.value)}
+                  >
+                    {compareKeyOptions.map((header) => (
+                      <option key={header} value={header}>
+                        {header}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="primary-button"
+                  onClick={handleRunComparison}
+                  disabled={!compareKey || Boolean(compareLoading)}
+                >
+                  开始比对
+                </button>
+              </div>
+              <div className="compare-hints">
+                <span>
+                  基准表：{compareBase?.fileName}（{compareBase?.rows.length} 行）
+                </span>
+                <span>
+                  对比表：{compareTarget?.fileName}（{compareTarget?.rows.length} 行）
+                </span>
+                <span>共享字段 {compareKeyOptions.length} 个</span>
+                {comparisonResult?.missingKeyRows.base ? (
+                  <span>基准表缺少关键字段 {comparisonResult.missingKeyRows.base} 行</span>
+                ) : null}
+                {comparisonResult?.missingKeyRows.target ? (
+                  <span>对比表缺少关键字段 {comparisonResult.missingKeyRows.target} 行</span>
+                ) : null}
+                {comparisonResult?.duplicateKeys.base.length ? (
+                  <span>基准表关键值重复 {comparisonResult.duplicateKeys.base.length} 个</span>
+                ) : null}
+                {comparisonResult?.duplicateKeys.target.length ? (
+                  <span>对比表关键值重复 {comparisonResult.duplicateKeys.target.length} 个</span>
+                ) : null}
+              </div>
+              {comparisonResult ? (
+                <Fragment>
+                  <div className="diff-grid">
+                    <div className="diff-section">
+                      <h3>仅基准表存在（{comparisonResult.onlyInBase.length}）</h3>
+                      {comparisonResult.onlyInBase.length ? (
+                        <div className="diff-scroll">
+                          {comparisonResult.onlyInBase.map((value) => (
+                            <span className="diff-pill" key={`base-${value}`}>
+                              {value}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="diff-empty">无差异</p>
+                      )}
+                    </div>
+                    <div className="diff-section">
+                      <h3>仅对比表存在（{comparisonResult.onlyInTarget.length}）</h3>
+                      {comparisonResult.onlyInTarget.length ? (
+                        <div className="diff-scroll">
+                          {comparisonResult.onlyInTarget.map((value) => (
+                            <span className="diff-pill" key={`target-${value}`}>
+                              {value}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="diff-empty">无差异</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="diff-section">
+                    <h3>字段不一致（{comparisonResult.mismatchedRows.length}）</h3>
+                    {comparisonResult.mismatchedRows.length ? (
+                      <div className="diff-table-wrapper">
+                        <table className="diff-table">
+                          <thead>
+                            <tr>
+                              <th>{compareKey || '关键字段'}</th>
+                              <th>差异明细</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {comparisonResult.mismatchedRows.map((item) => (
+                              <tr key={`diff-${item.key}`}>
+                                <td>{item.key}</td>
+                                <td>
+                                  {item.diffs.map((diff) => (
+                                    <div
+                                      className="diff-field-row"
+                                      key={`${item.key}-${diff.column}`}
+                                    >
+                                      <strong>{diff.column}：</strong>
+                                      <span className="diff-value">
+                                        {diff.baseValue || '（空）'}
+                                      </span>
+                                      <span className="diff-arrow">≠</span>
+                                      <span className="diff-value diff-target">
+                                        {diff.targetValue || '（空）'}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="diff-empty">所有共同记录字段完全一致</p>
+                    )}
+                  </div>
+                </Fragment>
+              ) : (
+                <div className="empty-state">
+                  <p>已准备就绪，点击“开始比对”查看详细差异。</p>
+                </div>
+              )}
+            </Fragment>
+          ) : (
+            <div className="empty-state">
+              <p>两张表没有相同的字段，请确认表头是否一致。</p>
+            </div>
+          )
+        ) : (
+          <div className="empty-state">
+            <p>上传基准表与对比表后可按关键字段自动比对。</p>
+          </div>
+        )}
+      </section>
       {toastMessage && <div className="toast-banner">{toastMessage}</div>}
     </div>
   )

@@ -246,6 +246,26 @@ const buildFallbackFields = (
   rows: Record<string, unknown>[]
 ) => columns.map((column) => buildFieldFromColumn(column, rows))
 
+const buildImportedFieldLayout = (
+  columns: ImportedColumn[],
+  rows: Record<string, unknown>[]
+) => {
+  if (!columns.length) return []
+  const fallbackFields = buildFallbackFields(columns, rows)
+  const defaultFields = buildDefaultFields(columns, rows)
+  if (!defaultFields.length) return fallbackFields
+  const defaultBySourceKey = new Map<string, FeishuField>()
+  defaultFields.forEach((field) => {
+    if (field.sourceKey) {
+      defaultBySourceKey.set(field.sourceKey, field)
+    }
+  })
+  return fallbackFields.map((field) => {
+    if (!field.sourceKey) return field
+    return defaultBySourceKey.get(field.sourceKey) ?? field
+  })
+}
+
 const normalizeRowKeys = (row: Record<string, unknown>) => {
   const next: Record<string, unknown> = {}
   Object.entries(row).forEach(([key, value]) => {
@@ -881,12 +901,7 @@ function App() {
       setColumns(nextColumns)
 
       if (importMode === 'replace' || !fields.length) {
-        const defaultFields = buildDefaultFields(nextColumns, mergedRows)
-        setFields(
-          defaultFields.length
-            ? defaultFields
-            : buildFallbackFields(nextColumns, mergedRows)
-        )
+        setFields(buildImportedFieldLayout(nextColumns, mergedRows))
       }
 
       setRows([])
@@ -905,15 +920,14 @@ function App() {
   }
 
   const refreshFieldsFromColumns = () => {
-    if (!columns.length || !rawRows.length) return
-    const defaultFields = buildDefaultFields(columns, rawRows)
-    setFields(
-      defaultFields.length
-        ? defaultFields
-        : buildFallbackFields(columns, rawRows)
-    )
+    if (!columns.length || !rawRows.length) {
+      setStatus('请先导入数据后再尝试重置字段')
+      return
+    }
+    setFields(buildImportedFieldLayout(columns, rawRows))
     setRows([])
     setStatus('已根据导入字段重新生成配置，请再次映射')
+    showToast('字段配置已重置')
   }
 
   const updateField = <K extends keyof FeishuField>(
@@ -1019,8 +1033,10 @@ function App() {
       return
     }
 
+    const normalizedPrimaryName = normalizeKey(PRIMARY_FIELD_NAME).toLowerCase()
     const primaryColumnKey = columns.find(
-      (column) => normalizeKey(column.key) === PRIMARY_FIELD_NAME
+      (column) =>
+        normalizeKey(column.key).toLowerCase() === normalizedPrimaryName
     )?.key
 
     const primarySeen = new Set<string>()
@@ -1891,12 +1907,13 @@ function App() {
 
         <div className="status-banner">
           <span>
-            {compareStatus ||
-              '准备好两张表后，选择关键字段并点击“开始比对”。'}
+            {compareStatus || '准备好两张表后，选择关键字段并点击“开始比对”。'}
           </span>
           {comparisonResult && (
             <span className={compareDiffCount ? 'error-pill' : 'success-pill'}>
-              {compareDiffCount ? `发现 ${compareDiffCount} 处差异` : '完全一致'}
+              {compareDiffCount
+                ? `发现 ${compareDiffCount} 处差异`
+                : '完全一致'}
             </span>
           )}
         </div>
@@ -1928,30 +1945,45 @@ function App() {
               </div>
               <div className="compare-hints">
                 <span>
-                  基准表：{compareBase?.fileName}（{compareBase?.rows.length} 行）
+                  基准表：{compareBase?.fileName}（{compareBase?.rows.length}{' '}
+                  行）
                 </span>
                 <span>
-                  对比表：{compareTarget?.fileName}（{compareTarget?.rows.length} 行）
+                  对比表：{compareTarget?.fileName}（
+                  {compareTarget?.rows.length} 行）
                 </span>
                 <span>共享字段 {compareKeyOptions.length} 个</span>
                 {comparisonResult?.missingKeyRows.base ? (
-                  <span>基准表缺少关键字段 {comparisonResult.missingKeyRows.base} 行</span>
+                  <span>
+                    基准表缺少关键字段 {comparisonResult.missingKeyRows.base} 行
+                  </span>
                 ) : null}
                 {comparisonResult?.missingKeyRows.target ? (
-                  <span>对比表缺少关键字段 {comparisonResult.missingKeyRows.target} 行</span>
+                  <span>
+                    对比表缺少关键字段 {comparisonResult.missingKeyRows.target}{' '}
+                    行
+                  </span>
                 ) : null}
                 {comparisonResult?.duplicateKeys.base.length ? (
-                  <span>基准表关键值重复 {comparisonResult.duplicateKeys.base.length} 个</span>
+                  <span>
+                    基准表关键值重复{' '}
+                    {comparisonResult.duplicateKeys.base.length} 个
+                  </span>
                 ) : null}
                 {comparisonResult?.duplicateKeys.target.length ? (
-                  <span>对比表关键值重复 {comparisonResult.duplicateKeys.target.length} 个</span>
+                  <span>
+                    对比表关键值重复{' '}
+                    {comparisonResult.duplicateKeys.target.length} 个
+                  </span>
                 ) : null}
               </div>
               {comparisonResult ? (
                 <Fragment>
                   <div className="diff-grid">
                     <div className="diff-section">
-                      <h3>仅基准表存在（{comparisonResult.onlyInBase.length}）</h3>
+                      <h3>
+                        仅基准表存在（{comparisonResult.onlyInBase.length}）
+                      </h3>
                       {comparisonResult.onlyInBase.length ? (
                         <div className="diff-scroll">
                           {comparisonResult.onlyInBase.map((value) => (
@@ -1965,7 +1997,9 @@ function App() {
                       )}
                     </div>
                     <div className="diff-section">
-                      <h3>仅对比表存在（{comparisonResult.onlyInTarget.length}）</h3>
+                      <h3>
+                        仅对比表存在（{comparisonResult.onlyInTarget.length}）
+                      </h3>
                       {comparisonResult.onlyInTarget.length ? (
                         <div className="diff-scroll">
                           {comparisonResult.onlyInTarget.map((value) => (
@@ -1980,7 +2014,9 @@ function App() {
                     </div>
                   </div>
                   <div className="diff-section">
-                    <h3>字段不一致（{comparisonResult.mismatchedRows.length}）</h3>
+                    <h3>
+                      字段不一致（{comparisonResult.mismatchedRows.length}）
+                    </h3>
                     {comparisonResult.mismatchedRows.length ? (
                       <div className="diff-table-wrapper">
                         <table className="diff-table">

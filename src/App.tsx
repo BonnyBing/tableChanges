@@ -912,8 +912,14 @@ function App() {
               value: values[index],
             })),
             label: {
-              show: showLabel,
+              show: true,
               formatter: showLabel ? '{b}: {c} ({d}%)' : '{b}',
+            },
+            labelLine: {
+              show: true,
+              length: 15,
+              length2: 20,
+              smooth: 0.2,
             },
             emphasis: {
               itemStyle: {

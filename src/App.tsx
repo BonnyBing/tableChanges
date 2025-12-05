@@ -1,782 +1,76 @@
 import type { ChangeEvent } from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
-import ReactECharts from 'echarts-for-react'
 import type { EChartsOption } from 'echarts'
 import './App.css'
 
-type FieldType =
-  | 'text'
-  | 'number'
-  | 'singleSelect'
-  | 'multiSelect'
-  | 'link'
-  | 'attachment'
-type DocFormat = 'markdown' | 'html'
-type ImportMode = 'replace' | 'append'
-
-interface FieldValueMapping {
-  id: string
-  from: string
-  to: string
-}
-
-interface ImportedColumn {
-  key: string
-  inferredType: FieldType
-  sample: string[]
-}
-
-interface FeishuField {
-  id: string
-  name: string
-  type: FieldType
-  sourceKey?: string
-  required: boolean
-  options: string[]
-  valueMappings: FieldValueMapping[]
-  fixedLength?: number
-}
-
-interface TableRow {
-  rowId: string
-  values: Record<string, string>
-  errors: Record<string, string | undefined>
-}
-
-interface ParsedSheetData {
-  fileName: string
-  headers: string[]
-  rows: Record<string, string>[]
-}
-
-interface RowDifference {
-  key: string
-  diffs: Array<{
-    column: string
-    baseValue: string
-    targetValue: string
-  }>
-}
-
-interface ComparisonResult {
-  onlyInBase: string[]
-  onlyInTarget: string[]
-  mismatchedRows: RowDifference[]
-  duplicateKeys: {
-    base: string[]
-    target: string[]
-  }
-  missingKeyRows: {
-    base: number
-    target: number
-  }
-  comparedColumns: string[]
-}
-
-type SubtractResultType = 'onlyInA' | 'onlyInB' | 'common'
-
-interface SubtractResult {
-  type: SubtractResultType
-  fields: FeishuField[]
-  rows: TableRow[]
-}
-
-type CompareSide = 'base' | 'target'
-
-type ChartType = 'pie' | 'bar' | 'line'
-type PieLabelMode = 'tooltip' | 'label'
-
-interface ChartConfig {
-  type: ChartType
-  categoryField: string
-  valueField: string
-  title: string
-  pieLabelMode: PieLabelMode
-}
-
-const fieldTypeOptions: { value: FieldType; label: string }[] = [
-  { value: 'text', label: '文本' },
-  { value: 'number', label: '数字' },
-  { value: 'link', label: '链接' },
-  { value: 'singleSelect', label: '单选' },
-  { value: 'multiSelect', label: '多选' },
-  { value: 'attachment', label: '附件' },
-]
-
-const docFormatOptions: { value: DocFormat; label: string }[] = [
-  { value: 'markdown', label: 'Markdown (.md)' },
-  { value: 'html', label: 'HTML (.html)' },
-]
-
-const PRIMARY_FIELD_NAME = '教育id'
-
-interface DefaultFieldConfig {
-  label: string
-  type: FieldType
-  keywords: string[]
-  required?: boolean
-  options?: string[]
-  valueMappingPresets?: Array<{ from: string; to: string }>
-}
-
-const DEFAULT_FIELD_CONFIGS: DefaultFieldConfig[] = [
-  {
-    label: '姓名',
-    type: 'text',
-    keywords: ['姓名'],
-  },
-  {
-    label: '教育id',
-    type: 'text',
-    keywords: ['教育id'],
-  },
-  {
-    label: '密码',
-    type: 'number',
-    keywords: ['登录验证码', '验证码', '密码'],
-  },
-  {
-    label: '身份',
-    type: 'singleSelect',
-    keywords: ['角色', '身份'],
-    options: ['学生', '老师'],
-    valueMappingPresets: [
-      { from: 'S', to: '学生' },
-      { from: 's', to: '学生' },
-      { from: '学生', to: '学生' },
-      { from: 'T', to: '老师' },
-      { from: 't', to: '老师' },
-      { from: '老师', to: '老师' },
-    ],
-  },
-]
-
-const createFieldId = () => {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID()
-  }
-  return `field-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-const createMappingId = () =>
-  `map-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-
-const getSamples = (rows: Record<string, unknown>[], key: string, take = 3) =>
-  rows
-    .slice(0, take)
-    .map((row) => sanitizeValue(row[key]))
-    .filter(Boolean)
-
-const normalizeKey = (key: string) => key.trim()
-
-const buildColumns = (
-  rows: Record<string, unknown>[],
-  headerOrder: string[] = []
-): ImportedColumn[] => {
-  if (!rows.length && !headerOrder.length) return []
-  const orderedKeys: string[] = []
-  const seen = new Set<string>()
-  const pushKey = (key: string | undefined | null) => {
-    if (!key) return
-    const normalized = normalizeKey(key)
-    if (!normalized || seen.has(normalized)) return
-    seen.add(normalized)
-    orderedKeys.push(normalized)
-  }
-
-  headerOrder.forEach(pushKey)
-
-  rows.forEach((row) => {
-    Object.keys(row ?? {}).forEach((key) => {
-      pushKey(key)
-    })
-  })
-
-  return orderedKeys.map((key) => {
-    const samples = getSamples(rows, key)
-    return {
-      key,
-      inferredType: guessFieldType(samples),
-      sample: samples,
-    }
-  })
-}
-
-const findColumnByKeywords = (
-  columns: ImportedColumn[],
-  keywords: string[]
-) => {
-  const normalizedKeywords = keywords.map((keyword) =>
-    normalizeKey(keyword).toLowerCase()
-  )
-  return columns.find((column) => {
-    const normalizedKey = normalizeKey(column.key).toLowerCase()
-    return normalizedKeywords.some((keyword) => normalizedKey.includes(keyword))
-  })
-}
-
-const buildFieldFromColumn = (
-  column: ImportedColumn,
-  rows: Record<string, unknown>[],
-  overrides?: Partial<FeishuField>
-): FeishuField => ({
-  id: createFieldId(),
-  name: column.key,
-  type: column.inferredType,
-  sourceKey: column.key,
-  required: false,
-  options:
-    column.inferredType === 'singleSelect' ||
-    column.inferredType === 'multiSelect'
-      ? extractOptions(rows, column.key)
-      : [],
-  valueMappings: [],
-  fixedLength: undefined,
-  ...overrides,
-})
-
-const buildDefaultFields = (
-  columns: ImportedColumn[],
-  rows: Record<string, unknown>[]
-) => {
-  const fields = DEFAULT_FIELD_CONFIGS.map((config) => {
-    const column = findColumnByKeywords(columns, config.keywords)
-    if (!column) return null
-    return buildFieldFromColumn(column, rows, {
-      name: config.label,
-      type: config.type,
-      options:
-        config.type === 'singleSelect' || config.type === 'multiSelect'
-          ? config.options ?? extractOptions(rows, column.key)
-          : [],
-      valueMappings:
-        config.valueMappingPresets?.map((mapping) => ({
-          id: createMappingId(),
-          from: mapping.from,
-          to: mapping.to,
-        })) ?? [],
-    })
-  }).filter((field): field is FeishuField => Boolean(field))
-
-  return fields
-}
-
-const buildFallbackFields = (
-  columns: ImportedColumn[],
-  rows: Record<string, unknown>[]
-) => columns.map((column) => buildFieldFromColumn(column, rows))
-
-const buildImportedFieldLayout = (
-  columns: ImportedColumn[],
-  rows: Record<string, unknown>[]
-) => {
-  if (!columns.length) return []
-  const fallbackFields = buildFallbackFields(columns, rows)
-  const defaultFields = buildDefaultFields(columns, rows)
-  if (!defaultFields.length) return fallbackFields
-  const defaultBySourceKey = new Map<string, FeishuField>()
-  defaultFields.forEach((field) => {
-    if (field.sourceKey) {
-      defaultBySourceKey.set(field.sourceKey, field)
-    }
-  })
-  return fallbackFields.map((field) => {
-    if (!field.sourceKey) return field
-    return defaultBySourceKey.get(field.sourceKey) ?? field
-  })
-}
-
-const normalizeRowKeys = (row: Record<string, unknown>) => {
-  const next: Record<string, unknown> = {}
-  Object.entries(row).forEach(([key, value]) => {
-    const normalizedKey = normalizeKey(key)
-    if (!normalizedKey || normalizedKey in next) return
-    next[normalizedKey] = value
-  })
-  return next
-}
-
-const sanitizeValue = (value: unknown) =>
-  value === undefined || value === null ? '' : String(value).trim()
-
-const guessFieldType = (samples: string[]): FieldType => {
-  if (!samples.length) {
-    return 'text'
-  }
-
-  const nonEmpty = samples.filter(Boolean)
-  const numericHits = nonEmpty.filter(
-    (sample) => !Number.isNaN(Number(sample.replace(/,/g, '')))
-  )
-  const urlHits = nonEmpty.filter((sample) => /^https?:\/\//i.test(sample))
-
-  if (numericHits.length && numericHits.length / nonEmpty.length >= 0.8) {
-    return 'number'
-  }
-
-  if (urlHits.length && urlHits.length / nonEmpty.length >= 0.4) {
-    return 'link'
-  }
-
-  const uniqueValues = new Set(nonEmpty)
-
-  if (uniqueValues.size > 1 && uniqueValues.size <= 6) {
-    return 'singleSelect'
-  }
-
-  if (
-    nonEmpty.some((sample) => sample.includes(',') || sample.includes('、')) &&
-    uniqueValues.size <= 15
-  ) {
-    return 'multiSelect'
-  }
-
-  return 'text'
-}
-
-const extractOptions = (
-  rows: Record<string, unknown>[],
-  key: string,
-  limit = 20
-) => {
-  const values = rows.map((row) => sanitizeValue(row[key])).filter(Boolean)
-
-  return Array.from(new Set(values)).slice(0, limit)
-}
-
-const normalizeForType = (value: string, type: FieldType) => {
-  const cleaned = value.trim()
-  if (!cleaned) return ''
-
-  if (type === 'link' && !/^https?:\/\//i.test(cleaned)) {
-    return `https://${cleaned}`
-  }
-
-  return cleaned
-}
-
-const applyValueMappings = (value: string, field: FeishuField) => {
-  if (!value || !field.valueMappings.length) return value
-  const normalized = value.trim().toLowerCase()
-  const rule = field.valueMappings.find(
-    (mapping) => mapping.from.trim().toLowerCase() === normalized
-  )
-  if (!rule) {
-    return value
-  }
-  return rule.to ?? ''
-}
-
-const applyFixedLength = (value: string, field: FeishuField) => {
-  if (!value) return value
-  const targetLength = field.fixedLength
-  if (
-    targetLength === undefined ||
-    targetLength === null ||
-    Number.isNaN(targetLength) ||
-    targetLength <= 0
-  ) {
-    return value
-  }
-  return value.padStart(Number(targetLength), '0')
-}
-
-const CELL_ADDRESS_PATTERN = /^[A-Za-z]+[0-9]+$/
-
-const ensureSheetRef = (sheet: XLSX.WorkSheet) => {
-  const cells = Object.keys(sheet).filter((key) =>
-    CELL_ADDRESS_PATTERN.test(key)
-  )
-  if (!cells.length) return
-
-  const baseRange = sheet['!ref']
-    ? XLSX.utils.decode_range(sheet['!ref'] as string)
-    : {
-        s: { r: Number.MAX_SAFE_INTEGER, c: Number.MAX_SAFE_INTEGER },
-        e: { r: 0, c: 0 },
-      }
-  const range = { ...baseRange }
-
-  cells.forEach((address) => {
-    const decoded = XLSX.utils.decode_cell(address)
-    if (decoded.r < range.s.r) range.s.r = decoded.r
-    if (decoded.c < range.s.c) range.s.c = decoded.c
-    if (decoded.r > range.e.r) range.e.r = decoded.r
-    if (decoded.c > range.e.c) range.e.c = decoded.c
-  })
-
-  sheet['!ref'] = XLSX.utils.encode_range(range)
-}
-
-const parseSheetRows = (sheet: XLSX.WorkSheet) => {
-  ensureSheetRef(sheet)
-
-  const matrix = XLSX.utils.sheet_to_json<
-    (string | number | null | undefined)[]
-  >(sheet, {
-    header: 1,
-    defval: '',
-    raw: false,
-    blankrows: false,
-  })
-
-  if (!matrix.length) {
-    return { headers: [] as string[], rows: [] as Record<string, unknown>[] }
-  }
-
-  const [headerRow = [], ...dataRows] = matrix
-  const normalizedHeaders: string[] = []
-
-  headerRow.forEach((cell) => {
-    if (cell === undefined || cell === null) return
-    const normalized = normalizeKey(String(cell))
-    if (!normalized || normalizedHeaders.includes(normalized)) return
-    normalizedHeaders.push(normalized)
-  })
-
-  const rows = dataRows
-    .map((cells) => {
-      const row: Record<string, unknown> = {}
-      normalizedHeaders.forEach((header, index) => {
-        const rawValue = (cells ?? [])[index]
-        row[header] = sanitizeValue(rawValue)
-      })
-      return row
-    })
-    .filter((row) => Object.values(row).some((value) => sanitizeValue(value)))
-
-  return { headers: normalizedHeaders, rows }
-}
-
-const convertRowToStringRecord = (row: Record<string, unknown>) => {
-  const next: Record<string, string> = {}
-  Object.entries(row).forEach(([key, value]) => {
-    next[key] = sanitizeValue(value)
-  })
-  return next
-}
-
-const parseFileToSheetData = async (
-  file: File
-): Promise<ParsedSheetData | null> => {
-  const data = await file.arrayBuffer()
-  const workbook = XLSX.read(data, { type: 'array' })
-  const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
-  if (!firstSheet) return null
-  const { headers, rows } = parseSheetRows(firstSheet)
-  if (!headers.length || !rows.length) return null
-  return {
-    fileName: file.name,
-    headers,
-    rows: rows.map((row) => convertRowToStringRecord(row)),
-  }
-}
-
-const buildKeyIndex = (rows: Record<string, string>[], key: string) => {
-  const map = new Map<string, Record<string, string>>()
-  const duplicates = new Set<string>()
-  let missingKey = 0
-  rows.forEach((row) => {
-    const keyValue = sanitizeValue(row[key])
-    if (!keyValue) {
-      missingKey += 1
-      return
-    }
-    if (map.has(keyValue)) {
-      duplicates.add(keyValue)
-      return
-    }
-    map.set(keyValue, row)
-  })
-  return {
-    map,
-    duplicates: Array.from(duplicates),
-    missingKey,
-  }
-}
-
-const buildComparisonResult = (
-  base: ParsedSheetData,
-  target: ParsedSheetData,
-  key: string
-): ComparisonResult => {
-  const baseIndex = buildKeyIndex(base.rows, key)
-  const targetIndex = buildKeyIndex(target.rows, key)
-  const comparedColumns = Array.from(
-    new Set([...base.headers, ...target.headers])
-  )
-  const onlyInBase: string[] = []
-  const mismatchedRows: RowDifference[] = []
-  baseIndex.map.forEach((baseRow, keyValue) => {
-    const targetRow = targetIndex.map.get(keyValue)
-    if (!targetRow) {
-      onlyInBase.push(keyValue)
-      return
-    }
-    const diffs: RowDifference['diffs'] = []
-    comparedColumns.forEach((column) => {
-      const baseValue = sanitizeValue(baseRow[column])
-      const targetValue = sanitizeValue(targetRow[column])
-      if (baseValue !== targetValue) {
-        diffs.push({ column, baseValue, targetValue })
-      }
-    })
-    if (diffs.length) {
-      mismatchedRows.push({ key: keyValue, diffs })
-    }
-  })
-  const onlyInTarget = Array.from(targetIndex.map.keys()).filter(
-    (keyValue) => !baseIndex.map.has(keyValue)
-  )
-  const sortByKey = (a: string, b: string) =>
-    a.localeCompare(b, 'zh-Hans-CN', { numeric: true })
-  return {
-    onlyInBase: onlyInBase.sort(sortByKey),
-    onlyInTarget: onlyInTarget.sort(sortByKey),
-    mismatchedRows: mismatchedRows.sort((a, b) => sortByKey(a.key, b.key)),
-    duplicateKeys: {
-      base: baseIndex.duplicates,
-      target: targetIndex.duplicates,
-    },
-    missingKeyRows: {
-      base: baseIndex.missingKey,
-      target: targetIndex.missingKey,
-    },
-    comparedColumns,
-  }
-}
-
-const validateValue = (value: string, field: FeishuField) => {
-  if (!value) {
-    return field.required ? '必填字段为空' : undefined
-  }
-
-  switch (field.type) {
-    case 'number':
-      return Number.isFinite(Number(value.replace(/,/g, '')))
-        ? undefined
-        : '需要为数字'
-    case 'link':
-      return /^https?:\/\//i.test(value)
-        ? undefined
-        : '请填写以 http/https 开头的链接'
-    case 'singleSelect':
-      if (field.options.length && !field.options.includes(value)) {
-        return '不在可选范围内'
-      }
-      return undefined
-    case 'multiSelect': {
-      const parts = value
-        .split(/[,，、]/)
-        .map((item) => item.trim())
-        .filter(Boolean)
-      if (!parts.length) {
-        return '请输入至少一个选项'
-      }
-      if (
-        field.options.length &&
-        parts.some((part) => !field.options.includes(part))
-      ) {
-        return '含有未定义的选项'
-      }
-      return undefined
-    }
-    default:
-      return undefined
-  }
-}
-
-const buildHtmlTable = (
-  fields: FeishuField[],
-  rows: TableRow[],
-  includeHeader = true
-) => {
-  const header = fields
-    .map((field) => `<th>${field.name}${field.required ? ' *' : ''}</th>`)
-    .join('')
-  const body = rows
-    .map((row) => {
-      const cells = fields
-        .map((field) => `<td>${escapeHtml(row.values[field.id] ?? '')}</td>`)
-        .join('')
-      return `<tr>${cells}</tr>`
-    })
-    .join('')
-
-  const headerSection = includeHeader
-    ? `<thead>
-      <tr>
-        ${header}
-      </tr>
-    </thead>`
-    : ''
-
-  return `
-  <table border="1" cellspacing="0" cellpadding="6">
-    ${headerSection}
-    <tbody>${body}</tbody>
-  </table>
-  `
-}
-
-const escapeMarkdown = (value: string) => value.replace(/[|]/g, '\\|')
-
-const buildMarkdownDoc = (
-  fields: FeishuField[],
-  rows: TableRow[],
-  note: string
-) => {
-  const header = `| ${fields
-    .map((field) => escapeMarkdown(field.name))
-    .join(' | ')} |`
-  const divider = `|${new Array(fields.length).fill(' --- ').join('|')}|`
-  const body = rows
-    .map(
-      (row) =>
-        `| ${fields
-          .map((field) => escapeMarkdown(row.values[field.id] ?? ''))
-          .join(' | ')} |`
-    )
-    .join('\n')
-
-  return `# 飞书多维表格整理
-
-- 导出时间：${new Date().toLocaleString()}
-- 记录数：${rows.length}
-${note ? `- 备注：${note}\n` : ''}
-${header}
-${divider}
-${body}
-`
-}
-
-const buildHtmlDoc = (
-  fields: FeishuField[],
-  rows: TableRow[],
-  note: string
-) => {
-  return `<!DOCTYPE html>
-<html lang="zh">
-<head>
-  <meta charset="UTF-8" />
-  <title>飞书多维表格整理</title>
-  <style>
-    body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; padding: 24px; background: #fff; color: #1f2329; }
-    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-    th, td { border: 1px solid #d6dde6; padding: 8px 10px; text-align: left; }
-    th { background: #f5f7fb; }
-    caption { text-align: left; font-weight: 600; margin-bottom: 8px; }
-  </style>
-</head>
-<body>
-  <h1>飞书多维表格整理</h1>
-  <p>导出时间：${new Date().toLocaleString()}</p>
-  <p>记录数：${rows.length}</p>
-  ${note ? `<p>备注：${escapeHtml(note)}</p>` : ''}
-  ${buildHtmlTable(fields, rows)}
-</body>
-</html>`
-}
-
-const buildTsv = (
-  fields: FeishuField[],
-  rows: TableRow[],
-  includeHeader = true
-) => {
-  const header = fields.map((field) => field.name).join('\t')
-  const body = rows
-    .map((row) =>
-      fields
-        .map((field) => (row.values[field.id] ?? '').replace(/\n/g, ' '))
-        .join('\t')
-    )
-    .join('\n')
-  return includeHeader ? `${header}\n${body}` : body
-}
-
-const escapeCsvValue = (value: string) => {
-  if (/["\n,]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`
-  }
-  return value
-}
-
-const buildCsv = (fields: FeishuField[], rows: TableRow[]) => {
-  const header = fields.map((field) => escapeCsvValue(field.name)).join(',')
-  const body = rows
-    .map((row) =>
-      fields
-        .map((field) => escapeCsvValue(row.values[field.id] ?? ''))
-        .join(',')
-    )
-    .join('\n')
-  return `${header}\n${body}`
-}
-
-const buildJsonRows = (fields: FeishuField[], rows: TableRow[]) =>
-  rows.map((row) => {
-    const record: Record<string, string> = {}
-    fields.forEach((field) => {
-      record[field.name] = row.values[field.id] ?? ''
-    })
-    return record
-  })
-
-const escapeHtml = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-
-const copyRichContent = async (html: string, plain: string) => {
-  if (typeof window !== 'undefined') {
-    const clipboardItemCtor = (
-      window as typeof window & { ClipboardItem?: typeof ClipboardItem }
-    ).ClipboardItem
-    if (navigator?.clipboard?.write && clipboardItemCtor) {
-      const item = new clipboardItemCtor({
-        'text/html': new Blob([html], { type: 'text/html' }),
-        'text/plain': new Blob([plain], { type: 'text/plain' }),
-      })
-      await navigator.clipboard.write([item])
-      return
-    }
-  }
-
-  if (navigator?.clipboard?.writeText) {
-    await navigator.clipboard.writeText(plain)
-    return
-  }
-
-  fallbackCopy(plain)
-}
-
-const fallbackCopy = (text: string) => {
-  if (typeof document === 'undefined') return
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.style.position = 'fixed'
-  textarea.style.top = '0'
-  textarea.style.left = '0'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.select()
-  document.execCommand('copy')
-  document.body.removeChild(textarea)
-}
-
-const downloadDocument = (content: string, mime: string, filename: string) => {
-  if (typeof document === 'undefined') return
-  const blob = new Blob([content], { type: mime })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  anchor.click()
-  URL.revokeObjectURL(url)
-}
+// 导入类型
+import type {
+  FieldType,
+  FeishuField,
+  TableRow,
+  ParsedSheetData,
+  ComparisonResult,
+  SubtractResult,
+  ChartConfig,
+  ImportedColumn,
+  CompareSide,
+  SubtractResultType,
+  ImportMode,
+  DocFormat,
+} from './types'
+
+// 导入常量
+import {
+  PRIMARY_FIELD_NAME,
+  fieldTypeOptions,
+  docFormatOptions,
+} from './constants'
+
+// 导入工具函数
+import {
+  sanitizeValue,
+  createFieldId,
+  createMappingId,
+  normalizeKey,
+  getSamples,
+} from './utils/helpers'
+
+import {
+  parseFileToSheetData,
+  parseSheetRows,
+  normalizeRowKeys,
+  buildColumns,
+} from './utils/excel'
+
+import { validateValue, extractOptions } from './utils/validation'
+
+import {
+  normalizeForType,
+  applyValueMappings,
+  applyFixedLength,
+  buildComparisonResult,
+} from './utils/transform'
+
+import {
+  buildHtmlTable,
+  buildMarkdownDoc,
+  buildHtmlDoc,
+  buildTsv,
+  buildCsv,
+  buildJsonRows,
+  copyRichContent,
+  fallbackCopy,
+  downloadDocument,
+} from './utils/export'
+
+import { buildImportedFieldLayout } from './utils/fieldBuilder'
+
+import { buildChartOption, extractChartData } from './utils/chartConfig'
+
+import { ChartSection } from './components/ChartSection'
+import { Header } from './components/Header'
+import { Toast } from './components/Toast'
 
 function App() {
   const [columns, setColumns] = useState<ImportedColumn[]>([])
@@ -821,6 +115,7 @@ function App() {
     valueField: '',
     title: '数据图表',
     pieLabelMode: 'tooltip',
+    legendPosition: 'left',
   })
   const [chartLoading, setChartLoading] = useState(false)
 
@@ -875,114 +170,13 @@ function App() {
       return null
     }
 
-    const categories: string[] = []
-    const values: number[] = []
+    const { categories, values } = extractChartData(
+      chartData.rows,
+      chartConfig.categoryField,
+      chartConfig.valueField
+    )
 
-    chartData.rows.forEach((row) => {
-      const category = sanitizeValue(row[chartConfig.categoryField])
-      const value = sanitizeValue(row[chartConfig.valueField])
-      if (category && value) {
-        categories.push(category)
-        const numValue = Number(value.replace(/,/g, ''))
-        values.push(Number.isNaN(numValue) ? 0 : numValue)
-      }
-    })
-
-    if (chartConfig.type === 'pie') {
-      const showLabel = chartConfig.pieLabelMode === 'label'
-      return {
-        title: {
-          text: chartConfig.title,
-          left: 'center',
-        },
-        tooltip: {
-          trigger: 'item',
-          formatter: '{b}: {c} ({d}%)',
-        },
-        legend: {
-          orient: 'vertical',
-          left: 'left',
-        },
-        series: [
-          {
-            type: 'pie',
-            radius: '50%',
-            data: categories.map((name, index) => ({
-              name,
-              value: values[index],
-            })),
-            label: {
-              show: true,
-              formatter: showLabel ? '{b}: {c} ({d}%)' : '{b}',
-            },
-            labelLine: {
-              show: true,
-              length: 15,
-              length2: 20,
-              smooth: 0.2,
-            },
-            emphasis: {
-              itemStyle: {
-                shadowBlur: 10,
-                shadowOffsetX: 0,
-                shadowColor: 'rgba(0, 0, 0, 0.5)',
-              },
-            },
-          },
-        ],
-      }
-    }
-
-    if (chartConfig.type === 'line') {
-      return {
-        title: {
-          text: chartConfig.title,
-        },
-        tooltip: {
-          trigger: 'axis',
-        },
-        xAxis: {
-          type: 'category',
-          data: categories,
-        },
-        yAxis: {
-          type: 'value',
-        },
-        series: [
-          {
-            type: 'line',
-            data: values,
-            smooth: true,
-          },
-        ],
-      }
-    }
-
-    // bar chart
-    return {
-      title: {
-        text: chartConfig.title,
-      },
-      tooltip: {
-        trigger: 'axis',
-      },
-      xAxis: {
-        type: 'category',
-        data: categories,
-        axisLabel: {
-          rotate: categories.length > 10 ? 45 : 0,
-        },
-      },
-      yAxis: {
-        type: 'value',
-      },
-      series: [
-        {
-          type: 'bar',
-          data: values,
-        },
-      ],
-    }
+    return buildChartOption(chartConfig, categories, values)
   }, [chartData, chartConfig])
 
   const showToast = (message: string, duration = 2600) => {
@@ -1804,35 +998,13 @@ function App() {
       valueField: '',
       title: '数据图表',
       pieLabelMode: 'tooltip',
+      legendPosition: 'left',
     })
   }
 
   return (
     <div className="app-shell">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">飞书多维表格助手</p>
-          <h1>上传 · 映射 · 校验 · 一键复制</h1>
-          <p className="subtitle">
-            导入
-            Excel/CSV，配置字段要求，实时编辑并校验数据，最后一键复制或导出成文档，直接粘贴进
-            Excel、飞书多维表格或文档。
-          </p>
-        </div>
-        <div className="header-actions">
-          <button className="ghost-button" onClick={resetWorkspace}>
-            清空工作区
-          </button>
-          <a
-            className="ghost-button"
-            href="https://www.feishu.cn/hc"
-            target="_blank"
-            rel="noreferrer"
-          >
-            查看字段规范
-          </a>
-        </div>
-      </header>
+      <Header onResetWorkspace={resetWorkspace} />
 
       <section className="panel">
         <div className="panel-head">
@@ -2854,154 +2026,19 @@ function App() {
         )}
       </section>
 
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h2>7. 数据可视化</h2>
-            <p className="panel-subtitle">
-              上传表格数据，自动生成饼图、柱状图或折线图
-            </p>
-          </div>
-          <div className="panel-actions">
-            <button
-              className="ghost-button"
-              onClick={resetChart}
-              disabled={!chartData}
-            >
-              清空图表
-            </button>
-          </div>
-        </div>
-
-        <div className="chart-upload-section">
-          <label className="upload-button">
-            <input
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              onChange={handleChartFileChange}
-              disabled={chartLoading}
-            />
-            {chartLoading ? '解析中...' : '上传数据文件'}
-          </label>
-          {chartData && (
-            <div className="chart-file-info">
-              <span>文件：{chartData.fileName}</span>
-              <span>行数：{chartData.rows.length}</span>
-              <span>字段：{chartData.headers.length}</span>
-            </div>
-          )}
-        </div>
-
-        {chartData ? (
-          <Fragment>
-            <div className="chart-controls">
-              <label>
-                图表类型
-                <select
-                  value={chartConfig.type}
-                  onChange={(event) =>
-                    setChartConfig((prev) => ({
-                      ...prev,
-                      type: event.target.value as ChartType,
-                    }))
-                  }
-                >
-                  <option value="bar">柱状图</option>
-                  <option value="line">折线图</option>
-                  <option value="pie">饼图</option>
-                </select>
-              </label>
-              <label>
-                分类字段（X轴 / 饼图标签）
-                <select
-                  value={chartConfig.categoryField}
-                  onChange={(event) =>
-                    setChartConfig((prev) => ({
-                      ...prev,
-                      categoryField: event.target.value,
-                    }))
-                  }
-                >
-                  <option value="">请选择...</option>
-                  {chartFieldOptions.map((field) => (
-                    <option key={field} value={field}>
-                      {field}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                数值字段（Y轴 / 饼图数值）
-                <select
-                  value={chartConfig.valueField}
-                  onChange={(event) =>
-                    setChartConfig((prev) => ({
-                      ...prev,
-                      valueField: event.target.value,
-                    }))
-                  }
-                >
-                  <option value="">请选择...</option>
-                  {chartFieldOptions.map((field) => (
-                    <option key={field} value={field}>
-                      {field}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                图表标题
-                <input
-                  type="text"
-                  value={chartConfig.title}
-                  onChange={(event) =>
-                    setChartConfig((prev) => ({
-                      ...prev,
-                      title: event.target.value,
-                    }))
-                  }
-                  placeholder="请输入图表标题"
-                />
-              </label>
-              {chartConfig.type === 'pie' && (
-                <label>
-                  饼图标签模式
-                  <select
-                    value={chartConfig.pieLabelMode}
-                    onChange={(event) =>
-                      setChartConfig((prev) => ({
-                        ...prev,
-                        pieLabelMode: event.target.value as PieLabelMode,
-                      }))
-                    }
-                  >
-                    <option value="tooltip">鼠标悬浮显示</option>
-                    <option value="label">直接显示在标签</option>
-                  </select>
-                </label>
-              )}
-            </div>
-            {chartOption ? (
-              <div className="chart-container">
-                <ReactECharts
-                  option={chartOption}
-                  style={{ height: '500px', width: '100%' }}
-                />
-              </div>
-            ) : (
-              <div className="empty-state">
-                <p>请选择分类字段和数值字段以生成图表</p>
-              </div>
-            )}
-          </Fragment>
-        ) : (
-          <div className="empty-state">
-            <p>上传包含数据的 Excel/CSV 文件开始可视化</p>
-            <span>建议格式：第一列为分类名称，第二列为数值</span>
-          </div>
-        )}
-      </section>
-      {toastMessage && <div className="toast-banner">{toastMessage}</div>}
+      <ChartSection
+        chartData={chartData}
+        chartConfig={chartConfig}
+        chartLoading={chartLoading}
+        chartFieldOptions={chartFieldOptions}
+        chartOption={chartOption}
+        onFileChange={handleChartFileChange}
+        onConfigChange={(updates) =>
+          setChartConfig((prev) => ({ ...prev, ...updates }))
+        }
+        onReset={resetChart}
+      />
+      <Toast message={toastMessage} />
     </div>
   )
 }

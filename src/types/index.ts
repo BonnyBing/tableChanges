@@ -13,6 +13,10 @@ export type SubtractResultType = 'onlyInA' | 'onlyInB' | 'common'
 export type ChartType = 'pie' | 'bar' | 'line'
 export type PieLabelMode = 'tooltip' | 'label'
 export type LegendPosition = 'left' | 'right' | 'top' | 'bottom' | 'none'
+export type AggregateType = 'sum' | 'count' | 'average' | 'max' | 'min'
+export type SortByType = 'group' | 'value'
+export type SortOrderType = 'asc' | 'desc' | 'none'
+export type ChartSortMode = 'original' | 'valueAsc' | 'valueDesc' | 'labelAsc' | 'labelDesc'
 
 export interface FieldValueMapping {
   id: string
@@ -95,5 +99,29 @@ export interface DefaultFieldConfig {
   required?: boolean
   options?: string[]
   valueMappingPresets?: Array<{ from: string; to: string }>
+}
+
+export interface StatisticsConfig {
+  groupByField: string
+  aggregateField: string
+  aggregateType: AggregateType
+  sortBy: SortByType
+  sortOrder: SortOrderType
+}
+
+export interface StatisticsRow {
+  id: string
+  groupValue: string
+  aggregateValue: number
+}
+
+export interface StatisticsHistory {
+  id: string
+  timestamp: number
+  config: StatisticsConfig
+  fileName: string
+  rows: StatisticsRow[]
+  chartType: ChartType
+  chartSortMode: ChartSortMode
 }
 

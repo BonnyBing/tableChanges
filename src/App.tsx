@@ -18,6 +18,10 @@ import type {
   SubtractResultType,
   ImportMode,
   DocFormat,
+  StatisticsConfig,
+  StatisticsHistory,
+  ChartType,
+  ChartSortMode,
 } from './types'
 
 // 导入常量
@@ -68,9 +72,16 @@ import { buildImportedFieldLayout } from './utils/fieldBuilder'
 
 import { buildChartOption, extractChartData } from './utils/chartConfig'
 
+import {
+  calculateStatistics,
+  sortChartData,
+  getAggregateLabel,
+} from './utils/statistics'
+
 import { ChartSection } from './components/ChartSection'
 import { Header } from './components/Header'
 import { Toast } from './components/Toast'
+import { StatisticsSection } from './components/StatisticsSection'
 
 function App() {
   const [columns, setColumns] = useState<ImportedColumn[]>([])
@@ -118,6 +129,23 @@ function App() {
     legendPosition: 'left',
   })
   const [chartLoading, setChartLoading] = useState(false)
+
+  const [statsData, setStatsData] = useState<ParsedSheetData | null>(null)
+  const [statsConfig, setStatsConfig] = useState<StatisticsConfig>({
+    groupByField: '',
+    aggregateField: '',
+    aggregateType: 'sum',
+    sortBy: 'value',
+    sortOrder: 'desc',
+  })
+  const [statsHistory, setStatsHistory] = useState<StatisticsHistory[]>([])
+  const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+  const [statsChartType, setStatsChartType] = useState<ChartType>('bar')
+  const [statsChartSortMode, setStatsChartSortMode] =
+    useState<ChartSortMode>('original')
+  const [statsChartOption, setStatsChartOption] =
+    useState<EChartsOption | null>(null)
 
   const hasData = rawRows.length > 0
   const compareKeyOptions = useMemo(() => {
@@ -1000,6 +1028,204 @@ function App() {
       pieLabelMode: 'tooltip',
       legendPosition: 'left',
     })
+  }
+
+  const handleStatsFileChange = async (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setStatsLoading(true)
+    try {
+      const parsed = await parseFileToSheetData(file)
+      if (!parsed) {
+        showToast('未读取到有效数据，请确认表头与数据行')
+        return
+      }
+      setStatsData(parsed)
+
+      // 自动选择第一个字段作为分组，第二个字段作为统计
+      if (parsed.headers.length >= 2) {
+        setStatsConfig((prev) => ({
+          ...prev,
+          groupByField: parsed.headers[0],
+          aggregateField: parsed.headers[1],
+        }))
+      }
+
+      showToast(`已载入 ${parsed.fileName}（${parsed.rows.length} 行）`)
+    } catch (error) {
+      console.error(error)
+      showToast('文件解析失败，请检查文件格式')
+    } finally {
+      setStatsLoading(false)
+      event.target.value = ''
+    }
+  }
+
+  const handleGenerateStatistics = () => {
+    if (!statsData) {
+      showToast('请先上传数据文件')
+      return
+    }
+    if (!statsConfig.groupByField || !statsConfig.aggregateField) {
+      showToast('请选择分组字段和统计字段')
+      return
+    }
+
+    const results = calculateStatistics(statsData, statsConfig)
+    const historyId = `history-${Date.now()}`
+
+    const newHistory: StatisticsHistory = {
+      id: historyId,
+      timestamp: Date.now(),
+      config: { ...statsConfig },
+      fileName: statsData.fileName,
+      rows: results,
+      chartType: 'bar',
+      chartSortMode: 'original',
+    }
+
+    setStatsHistory((prev) => [newHistory, ...prev])
+    setActiveHistoryId(historyId)
+    showToast(`已生成 ${results.length} 个分组统计`)
+  }
+
+  const resetStatistics = () => {
+    setStatsData(null)
+    setStatsConfig({
+      groupByField: '',
+      aggregateField: '',
+      aggregateType: 'sum',
+      sortBy: 'value',
+      sortOrder: 'desc',
+    })
+    setStatsHistory([])
+    setActiveHistoryId(null)
+    setStatsChartOption(null)
+    showToast('已清空统计区')
+  }
+
+  const handleDeleteStatsHistory = (id: string) => {
+    setStatsHistory((prev) => prev.filter((h) => h.id !== id))
+    if (activeHistoryId === id) {
+      setActiveHistoryId(null)
+      setStatsChartOption(null)
+    }
+    showToast('已删除统计记录')
+  }
+
+  const handleUpdateStatsRow = (
+    historyId: string,
+    rowId: string,
+    value: number
+  ) => {
+    setStatsHistory((prev) =>
+      prev.map((history) => {
+        if (history.id !== historyId) return history
+        return {
+          ...history,
+          rows: history.rows.map((row) =>
+            row.id === rowId ? { ...row, aggregateValue: value } : row
+          ),
+        }
+      })
+    )
+  }
+
+  const handleCopyStatsTable = async (historyId: string) => {
+    const history = statsHistory.find((h) => h.id === historyId)
+    if (!history) return
+
+    const headerRow = [
+      history.config.groupByField,
+      `${getAggregateLabel(history.config.aggregateType)}(${
+        history.config.aggregateField
+      })`,
+    ].join('\t')
+
+    const dataRows = history.rows
+      .map((row) => [row.groupValue, row.aggregateValue].join('\t'))
+      .join('\n')
+
+    const tsv = `${headerRow}\n${dataRows}`
+
+    try {
+      await copyRichContent(
+        `<table><tr><th>${
+          history.config.groupByField
+        }</th><th>${getAggregateLabel(
+          history.config.aggregateType
+        )}</th></tr>${history.rows
+          .map(
+            (row) =>
+              `<tr><td>${row.groupValue}</td><td>${row.aggregateValue}</td></tr>`
+          )
+          .join('')}</table>`,
+        tsv
+      )
+      showToast('复制成功')
+    } catch (error) {
+      console.error(error)
+      fallbackCopy(tsv)
+      showToast('复制为纯文本', 3200)
+    }
+  }
+
+  const handleDownloadStatsExcel = (historyId: string) => {
+    const history = statsHistory.find((h) => h.id === historyId)
+    if (!history) return
+
+    const data = history.rows.map((row) => ({
+      [history.config.groupByField]: row.groupValue,
+      [`${getAggregateLabel(history.config.aggregateType)}(${
+        history.config.aggregateField
+      })`]: row.aggregateValue,
+    }))
+
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(data),
+      'Statistics'
+    )
+    XLSX.writeFile(workbook, `statistics-${Date.now()}.xlsx`)
+    showToast('Excel 已下载')
+  }
+
+  const handleGenerateStatsChart = () => {
+    const history = statsHistory.find((h) => h.id === activeHistoryId)
+    if (!history) {
+      showToast('请先生成统计表')
+      return
+    }
+
+    let categories = history.rows.map((r) => r.groupValue)
+    let values = history.rows.map((r) => r.aggregateValue)
+
+    const sorted = sortChartData(categories, values, statsChartSortMode)
+    categories = sorted.categories
+    values = sorted.values
+
+    const chartTitle = `${history.config.groupByField} - ${getAggregateLabel(
+      history.config.aggregateType
+    )}`
+
+    const option = buildChartOption(
+      {
+        type: statsChartType,
+        categoryField: history.config.groupByField,
+        valueField: history.config.aggregateField,
+        title: chartTitle,
+        pieLabelMode: 'label',
+        legendPosition: 'left',
+      },
+      categories,
+      values
+    )
+
+    setStatsChartOption(option)
+    showToast('图表已生成')
   }
 
   return (
@@ -2038,6 +2264,32 @@ function App() {
         }
         onReset={resetChart}
       />
+
+      <StatisticsSection
+        statsData={statsData}
+        statsConfig={statsConfig}
+        statsHistory={statsHistory}
+        activeHistoryId={activeHistoryId}
+        statsLoading={statsLoading}
+        statsChartType={statsChartType}
+        statsChartSortMode={statsChartSortMode}
+        statsChartOption={statsChartOption}
+        onFileChange={handleStatsFileChange}
+        onConfigChange={(updates) =>
+          setStatsConfig((prev) => ({ ...prev, ...updates }))
+        }
+        onGenerate={handleGenerateStatistics}
+        onReset={resetStatistics}
+        onSelectHistory={setActiveHistoryId}
+        onDeleteHistory={handleDeleteStatsHistory}
+        onUpdateRow={handleUpdateStatsRow}
+        onCopyTable={handleCopyStatsTable}
+        onDownloadExcel={handleDownloadStatsExcel}
+        onChartTypeChange={setStatsChartType}
+        onChartSortChange={setStatsChartSortMode}
+        onGenerateChart={handleGenerateStatsChart}
+      />
+
       <Toast message={toastMessage} />
     </div>
   )

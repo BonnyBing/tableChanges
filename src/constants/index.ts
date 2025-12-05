@@ -1,4 +1,12 @@
-import type { FieldType, DocFormat, DefaultFieldConfig } from '../types'
+import type {
+  FieldType,
+  DocFormat,
+  DefaultFieldConfig,
+  AggregateType,
+  SortByType,
+  SortOrderType,
+  ChartSortMode,
+} from '../types'
 
 export const fieldTypeOptions: { value: FieldType; label: string }[] = [
   { value: 'text', label: '文本' },
@@ -15,6 +23,33 @@ export const docFormatOptions: { value: DocFormat; label: string }[] = [
 ]
 
 export const PRIMARY_FIELD_NAME = '教育id'
+
+export const aggregateTypeOptions: { value: AggregateType; label: string }[] = [
+  { value: 'sum', label: '求和' },
+  { value: 'count', label: '计数' },
+  { value: 'average', label: '平均值' },
+  { value: 'max', label: '最大值' },
+  { value: 'min', label: '最小值' },
+]
+
+export const sortByOptions: { value: SortByType; label: string }[] = [
+  { value: 'group', label: '按分组字段' },
+  { value: 'value', label: '按统计值' },
+]
+
+export const sortOrderOptions: { value: SortOrderType; label: string }[] = [
+  { value: 'asc', label: '升序' },
+  { value: 'desc', label: '降序' },
+  { value: 'none', label: '不排序' },
+]
+
+export const chartSortModeOptions: { value: ChartSortMode; label: string }[] = [
+  { value: 'original', label: '原始顺序' },
+  { value: 'valueAsc', label: '按数值升序' },
+  { value: 'valueDesc', label: '按数值降序' },
+  { value: 'labelAsc', label: '按标签升序' },
+  { value: 'labelDesc', label: '按标签降序' },
+]
 
 export const DEFAULT_FIELD_CONFIGS: DefaultFieldConfig[] = [
   {

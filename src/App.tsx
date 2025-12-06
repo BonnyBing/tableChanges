@@ -20,8 +20,6 @@ import type {
   DocFormat,
   StatisticsConfig,
   StatisticsHistory,
-  ChartType,
-  ChartSortMode,
 } from './types'
 
 // 导入常量
@@ -72,11 +70,7 @@ import { buildImportedFieldLayout } from './utils/fieldBuilder'
 
 import { buildChartOption, extractChartData } from './utils/chartConfig'
 
-import {
-  calculateStatistics,
-  sortChartData,
-  getAggregateLabel,
-} from './utils/statistics'
+import { calculateStatistics, getAggregateLabel } from './utils/statistics'
 
 import { ChartSection } from './components/ChartSection'
 import { Header } from './components/Header'
@@ -141,11 +135,6 @@ function App() {
   const [statsHistory, setStatsHistory] = useState<StatisticsHistory[]>([])
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
-  const [statsChartType, setStatsChartType] = useState<ChartType>('bar')
-  const [statsChartSortMode, setStatsChartSortMode] =
-    useState<ChartSortMode>('original')
-  const [statsChartOption, setStatsChartOption] =
-    useState<EChartsOption | null>(null)
 
   const hasData = rawRows.length > 0
   const compareKeyOptions = useMemo(() => {
@@ -1082,8 +1071,6 @@ function App() {
       config: { ...statsConfig },
       fileName: statsData.fileName,
       rows: results,
-      chartType: 'bar',
-      chartSortMode: 'original',
     }
 
     setStatsHistory((prev) => [newHistory, ...prev])
@@ -1102,7 +1089,6 @@ function App() {
     })
     setStatsHistory([])
     setActiveHistoryId(null)
-    setStatsChartOption(null)
     showToast('已清空统计区')
   }
 
@@ -1110,7 +1096,6 @@ function App() {
     setStatsHistory((prev) => prev.filter((h) => h.id !== id))
     if (activeHistoryId === id) {
       setActiveHistoryId(null)
-      setStatsChartOption(null)
     }
     showToast('已删除统计记录')
   }
@@ -1193,39 +1178,54 @@ function App() {
     showToast('Excel 已下载')
   }
 
-  const handleGenerateStatsChart = () => {
-    const history = statsHistory.find((h) => h.id === activeHistoryId)
+  const handleExportStatsToChart = (historyId: string) => {
+    const history = statsHistory.find((h) => h.id === historyId)
     if (!history) {
-      showToast('请先生成统计表')
+      showToast('统计记录未找到')
       return
     }
 
-    let categories = history.rows.map((r) => r.groupValue)
-    let values = history.rows.map((r) => r.aggregateValue)
+    // 将统计结果转换为图表数据格式
+    const chartData: ParsedSheetData = {
+      fileName: `统计结果-${history.config.groupByField}`,
+      headers: [
+        history.config.groupByField,
+        `${getAggregateLabel(history.config.aggregateType)}(${
+          history.config.aggregateField
+        })`,
+      ],
+      rows: history.rows.map((row) => ({
+        [history.config.groupByField]: row.groupValue,
+        [`${getAggregateLabel(history.config.aggregateType)}(${
+          history.config.aggregateField
+        })`]: row.aggregateValue.toString(),
+      })),
+    }
 
-    const sorted = sortChartData(categories, values, statsChartSortMode)
-    categories = sorted.categories
-    values = sorted.values
+    // 设置到图表模块
+    setChartData(chartData)
+    setChartConfig({
+      type: 'bar',
+      categoryField: chartData.headers[0],
+      valueField: chartData.headers[1],
+      title: `${history.config.groupByField} - ${getAggregateLabel(
+        history.config.aggregateType
+      )}`,
+      pieLabelMode: 'label',
+      legendPosition: 'left',
+    })
 
-    const chartTitle = `${history.config.groupByField} - ${getAggregateLabel(
-      history.config.aggregateType
-    )}`
+    showToast('已导入到数据可视化，请向下滚动查看图表')
 
-    const option = buildChartOption(
-      {
-        type: statsChartType,
-        categoryField: history.config.groupByField,
-        valueField: history.config.aggregateField,
-        title: chartTitle,
-        pieLabelMode: 'label',
-        legendPosition: 'left',
-      },
-      categories,
-      values
-    )
-
-    setStatsChartOption(option)
-    showToast('图表已生成')
+    // 滚动到图表区域
+    setTimeout(() => {
+      const chartSection = document.querySelector(
+        '[data-section="chart"]'
+      ) as HTMLElement
+      if (chartSection) {
+        chartSection.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    }, 100)
   }
 
   return (
@@ -2271,9 +2271,6 @@ function App() {
         statsHistory={statsHistory}
         activeHistoryId={activeHistoryId}
         statsLoading={statsLoading}
-        statsChartType={statsChartType}
-        statsChartSortMode={statsChartSortMode}
-        statsChartOption={statsChartOption}
         onFileChange={handleStatsFileChange}
         onConfigChange={(updates) =>
           setStatsConfig((prev) => ({ ...prev, ...updates }))
@@ -2285,9 +2282,7 @@ function App() {
         onUpdateRow={handleUpdateStatsRow}
         onCopyTable={handleCopyStatsTable}
         onDownloadExcel={handleDownloadStatsExcel}
-        onChartTypeChange={setStatsChartType}
-        onChartSortChange={setStatsChartSortMode}
-        onGenerateChart={handleGenerateStatsChart}
+        onExportToChart={handleExportStatsToChart}
       />
 
       <Toast message={toastMessage} />

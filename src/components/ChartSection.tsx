@@ -25,12 +25,12 @@ export const ChartSection = ({
   onReset,
 }: ChartSectionProps) => {
   return (
-    <section className="panel">
+    <section className="panel" data-section="chart">
       <div className="panel-head">
         <div>
           <h2>7. 数据可视化</h2>
           <p className="panel-subtitle">
-            上传表格数据，自动生成饼图、柱状图或折线图
+            上传表格数据或从统计结果导入，自动生成饼图、柱状图或折线图
           </p>
         </div>
         <div className="panel-actions">

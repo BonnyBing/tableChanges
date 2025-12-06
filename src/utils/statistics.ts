@@ -11,19 +11,58 @@ import { sanitizeValue } from './helpers'
 export const createStatisticsId = () =>
   `stats-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
 
+/**
+ * 拆分包含换行符的字符串为多个独立的字符串
+ * 支持 \n、\r\n 等换行符
+ */
+const splitByNewline = (value: string): string[] => {
+  if (!value) return []
+  
+  // 先统一替换 \r\n 为 \n，再按 \n 拆分
+  const normalized = value.replace(/\r\n/g, '\n')
+  
+  // 按换行符拆分，并过滤掉空字符串
+  return normalized
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
+/**
+ * 检查字段名是否可能是姓名字段
+ */
+const isNameField = (fieldName: string): boolean => {
+  const nameKeywords = ['姓名', 'name', '名字', '成员', '人员', '学员', '学生', '员工']
+  const lowerField = fieldName.toLowerCase()
+  return nameKeywords.some((keyword) => 
+    fieldName.includes(keyword) || lowerField.includes(keyword.toLowerCase())
+  )
+}
+
 export const groupByField = (
   rows: Record<string, string>[],
   field: string
 ): Map<string, Record<string, string>[]> => {
   const groups = new Map<string, Record<string, string>[]>()
+  const enableSplit = isNameField(field)
   
   rows.forEach((row) => {
-    const groupValue = sanitizeValue(row[field])
-    if (!groupValue) return
+    const groupValueRaw = sanitizeValue(row[field])
+    if (!groupValueRaw) return
     
-    const existing = groups.get(groupValue) || []
-    existing.push(row)
-    groups.set(groupValue, existing)
+    // 如果是姓名字段且包含换行符，则拆分
+    const groupValues = enableSplit && (groupValueRaw.includes('\n') || groupValueRaw.includes('\r'))
+      ? splitByNewline(groupValueRaw)
+      : [groupValueRaw]
+    
+    // 将原始记录加入到每个拆分后的分组中
+    groupValues.forEach((groupValue) => {
+      if (!groupValue) return
+      
+      const existing = groups.get(groupValue) || []
+      existing.push(row)
+      groups.set(groupValue, existing)
+    })
   })
   
   return groups
@@ -60,6 +99,8 @@ export const calculateStatistics = (
     
     if (config.aggregateType === 'count') {
       // 计数：统计记录数
+      // 注意：如果分组字段是姓名且包含换行符，每条记录会被拆分成多条
+      // 例如 "张三\n李四" 会被拆分为 "张三" 和 "李四" 两个分组，各计数+1
       aggregateValue = groupRows.length
     } else {
       // 其他统计方式：需要提取数值

@@ -1,6 +1,4 @@
 import { Fragment, type ChangeEvent } from 'react'
-import ReactECharts from 'echarts-for-react'
-import type { EChartsOption } from 'echarts'
 import type {
   ParsedSheetData,
   StatisticsConfig,
@@ -8,14 +6,11 @@ import type {
   AggregateType,
   SortByType,
   SortOrderType,
-  ChartType,
-  ChartSortMode,
 } from '../types'
 import {
   aggregateTypeOptions,
   sortByOptions,
   sortOrderOptions,
-  chartSortModeOptions,
 } from '../constants'
 import { getAggregateLabel, formatStatisticsValue } from '../utils/statistics'
 
@@ -25,9 +20,6 @@ interface StatisticsSectionProps {
   statsHistory: StatisticsHistory[]
   activeHistoryId: string | null
   statsLoading: boolean
-  statsChartType: ChartType
-  statsChartSortMode: ChartSortMode
-  statsChartOption: EChartsOption | null
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void
   onConfigChange: (updates: Partial<StatisticsConfig>) => void
   onGenerate: () => void
@@ -37,9 +29,7 @@ interface StatisticsSectionProps {
   onUpdateRow: (historyId: string, rowId: string, value: number) => void
   onCopyTable: (historyId: string) => void
   onDownloadExcel: (historyId: string) => void
-  onChartTypeChange: (type: ChartType) => void
-  onChartSortChange: (mode: ChartSortMode) => void
-  onGenerateChart: () => void
+  onExportToChart: (historyId: string) => void
 }
 
 export const StatisticsSection = ({
@@ -48,9 +38,6 @@ export const StatisticsSection = ({
   statsHistory,
   activeHistoryId,
   statsLoading,
-  statsChartType,
-  statsChartSortMode,
-  statsChartOption,
   onFileChange,
   onConfigChange,
   onGenerate,
@@ -60,9 +47,7 @@ export const StatisticsSection = ({
   onUpdateRow,
   onCopyTable,
   onDownloadExcel,
-  onChartTypeChange,
-  onChartSortChange,
-  onGenerateChart,
+  onExportToChart,
 }: StatisticsSectionProps) => {
   const activeHistory = statsHistory.find((h) => h.id === activeHistoryId)
   const fieldOptions = statsData?.headers || []
@@ -124,6 +109,13 @@ export const StatisticsSection = ({
                   </option>
                 ))}
               </select>
+              {statsConfig.groupByField &&
+                (statsConfig.groupByField.includes('姓名') ||
+                  statsConfig.groupByField.toLowerCase().includes('name')) && (
+                  <small style={{ color: '#666', fontSize: '12px', display: 'block', marginTop: '4px' }}>
+                    💡 提示：姓名字段会自动识别换行符，换行分隔的多个姓名将分别统计
+                  </small>
+                )}
             </label>
             <label>
               统计字段
@@ -256,6 +248,12 @@ export const StatisticsSection = ({
                 >
                   导出 Excel
                 </button>
+                <button
+                  className="primary-button"
+                  onClick={() => onExportToChart(activeHistory.id)}
+                >
+                  生成图表 📊
+                </button>
               </div>
 
               <div className="data-table-wrapper">
@@ -295,54 +293,6 @@ export const StatisticsSection = ({
                   </tbody>
                 </table>
               </div>
-
-              <div className="stats-chart-controls">
-                <h3>可视化图表</h3>
-                <div className="chart-controls">
-                  <label>
-                    图表类型
-                    <select
-                      value={statsChartType}
-                      onChange={(e) =>
-                        onChartTypeChange(e.target.value as ChartType)
-                      }
-                    >
-                      <option value="bar">柱状图</option>
-                      <option value="line">折线图</option>
-                      <option value="pie">饼图</option>
-                    </select>
-                  </label>
-                  <label>
-                    图表排序
-                    <select
-                      value={statsChartSortMode}
-                      onChange={(e) =>
-                        onChartSortChange(e.target.value as ChartSortMode)
-                      }
-                    >
-                      {chartSortModeOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-                    <button className="primary-button" onClick={onGenerateChart}>
-                      生成图表
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {statsChartOption && (
-                <div className="chart-container">
-                  <ReactECharts
-                    option={statsChartOption}
-                    style={{ height: '500px', width: '100%' }}
-                  />
-                </div>
-              )}
             </Fragment>
           )}
         </Fragment>

@@ -121,7 +121,5 @@ export interface StatisticsHistory {
   config: StatisticsConfig
   fileName: string
   rows: StatisticsRow[]
-  chartType: ChartType
-  chartSortMode: ChartSortMode
 }
 

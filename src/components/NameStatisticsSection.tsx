@@ -4,9 +4,10 @@ import type {
   NameStatisticsConfig,
   NameStatisticsRow,
 } from '../types'
-import { calculateNameStatistics } from '../utils/statistics'
-import { copyRichContent, fallbackCopy } from '../utils/export'
-import * as XLSX from 'xlsx'
+import {
+  nameStatisticsSortByOptions,
+  nameStatisticsSortOrderOptions,
+} from '../constants'
 
 interface NameStatisticsSectionProps {
   nameStatsData: ParsedSheetData | null
@@ -19,7 +20,6 @@ interface NameStatisticsSectionProps {
   onReset: () => void
   onCopyTable: () => void
   onDownloadExcel: () => void
-  showToast: (message: string, duration?: number) => void
 }
 
 export const NameStatisticsSection = ({
@@ -33,7 +33,6 @@ export const NameStatisticsSection = ({
   onReset,
   onCopyTable,
   onDownloadExcel,
-  showToast,
 }: NameStatisticsSectionProps) => {
   const fieldOptions = nameStatsData?.headers || []
 
@@ -99,9 +98,7 @@ export const NameStatisticsSection = ({
               姓名字段
               <select
                 value={nameStatsConfig.nameField}
-                onChange={(e) =>
-                  onConfigChange({ nameField: e.target.value })
-                }
+                onChange={(e) => onConfigChange({ nameField: e.target.value })}
               >
                 <option value="">请选择...</option>
                 {fieldOptions.map((field) => (
@@ -121,9 +118,68 @@ export const NameStatisticsSection = ({
                       marginTop: '4px',
                     }}
                   >
-                    💡 提示：姓名字段会自动识别换行符，换行分隔的多个姓名将分别统计
+                    💡
+                    提示：姓名字段会自动识别换行符，换行分隔的多个姓名将分别统计
                   </small>
                 )}
+            </label>
+            <label>
+              排序方式
+              <select
+                value={nameStatsConfig.sortBy}
+                onChange={(e) =>
+                  onConfigChange({
+                    sortBy: e.target.value as NameStatisticsConfig['sortBy'],
+                  })
+                }
+              >
+                {nameStatisticsSortByOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {nameStatsConfig.sortBy === 'customField' && (
+              <label>
+                统计字段
+                <select
+                  value={nameStatsConfig.sortField || ''}
+                  onChange={(e) =>
+                    onConfigChange({ sortField: e.target.value })
+                  }
+                >
+                  <option value="">请选择...</option>
+                  {fieldOptions
+                    .filter(
+                      (field) =>
+                        field !== nameStatsConfig.groupByField &&
+                        field !== nameStatsConfig.nameField
+                    )
+                    .map((field) => (
+                      <option key={field} value={field}>
+                        {field}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
+            <label>
+              排序方向
+              <select
+                value={nameStatsConfig.sortOrder}
+                onChange={(e) =>
+                  onConfigChange({
+                    sortOrder: e.target.value as 'asc' | 'desc',
+                  })
+                }
+              >
+                {nameStatisticsSortOrderOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
 
@@ -183,10 +239,11 @@ export const NameStatisticsSection = ({
       ) : (
         <div className="empty-state">
           <p>上传包含数据的 Excel/CSV 文件开始姓名统计</p>
-          <span>建议：选择分组字段（如部门、项目）和姓名字段（如姓名、成员）</span>
+          <span>
+            建议：选择分组字段（如部门、项目）和姓名字段（如姓名、成员）
+          </span>
         </div>
       )}
     </section>
   )
 }
-

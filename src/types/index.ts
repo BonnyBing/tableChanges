@@ -123,9 +123,14 @@ export interface StatisticsHistory {
   rows: StatisticsRow[]
 }
 
+export type NameStatisticsSortBy = 'original' | 'nameCount' | 'groupValue' | 'customField'
+
 export interface NameStatisticsConfig {
   groupByField: string
   nameField: string
+  sortBy: NameStatisticsSortBy
+  sortField?: string // 当 sortBy 为 'customField' 时使用
+  sortOrder: 'asc' | 'desc'
 }
 
 export interface NameStatisticsRow {

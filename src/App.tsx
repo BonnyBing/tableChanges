@@ -150,6 +150,8 @@ function App() {
   const [nameStatsConfig, setNameStatsConfig] = useState<NameStatisticsConfig>({
     groupByField: '',
     nameField: '',
+    sortBy: 'original',
+    sortOrder: 'asc',
   })
   const [nameStatsResults, setNameStatsResults] = useState<NameStatisticsRow[]>(
     []
@@ -1276,6 +1278,8 @@ function App() {
           ...prev,
           groupByField: parsed.headers[0],
           nameField: nameField || parsed.headers[1] || '',
+          sortBy: 'original',
+          sortOrder: 'asc',
         }))
       }
 
@@ -1309,6 +1313,8 @@ function App() {
     setNameStatsConfig({
       groupByField: '',
       nameField: '',
+      sortBy: 'original',
+      sortOrder: 'asc',
     })
     setNameStatsResults([])
     showToast('已清空统计区')
@@ -2444,7 +2450,6 @@ function App() {
         onReset={resetNameStatistics}
         onCopyTable={handleCopyNameStatsTable}
         onDownloadExcel={handleDownloadNameStatsExcel}
-        showToast={showToast}
       />
 
       <Toast message={toastMessage} />

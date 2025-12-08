@@ -228,13 +228,17 @@ export const sortChartData = (
 
 /**
  * 计算姓名统计：按分组字段统计对应的姓名列表
- * 支持换行符拆分，自动去重
+ * 支持换行符拆分，自动去重，支持多种排序方式
  */
 export const calculateNameStatistics = (
   data: ParsedSheetData,
   config: NameStatisticsConfig
 ): NameStatisticsRow[] => {
   const groups = new Map<string, Set<string>>()
+  const groupOrder = new Map<string, number>() // 保存原始顺序
+  const groupCustomValues = new Map<string, number>() // 保存自定义字段的统计值
+  
+  let originalIndex = 0
   
   data.rows.forEach((row) => {
     const groupValue = sanitizeValue(row[config.groupByField])
@@ -253,6 +257,7 @@ export const calculateNameStatistics = (
     if (!nameSet) {
       nameSet = new Set<string>()
       groups.set(groupValue, nameSet)
+      groupOrder.set(groupValue, originalIndex++)
     }
     
     // 添加所有姓名（Set自动去重）
@@ -261,6 +266,16 @@ export const calculateNameStatistics = (
         nameSet!.add(name)
       }
     })
+    
+    // 如果使用自定义字段排序，统计该字段的值
+    if (config.sortBy === 'customField' && config.sortField) {
+      const customValue = sanitizeValue(row[config.sortField])
+      const numValue = Number(customValue.replace(/,/g, ''))
+      if (!Number.isNaN(numValue)) {
+        const current = groupCustomValues.get(groupValue) || 0
+        groupCustomValues.set(groupValue, current + numValue)
+      }
+    }
   })
   
   // 转换为结果数组
@@ -278,10 +293,41 @@ export const calculateNameStatistics = (
     })
   })
   
-  // 按分组值排序
-  results.sort((a, b) =>
-    a.groupValue.localeCompare(b.groupValue, 'zh-Hans-CN', { numeric: true })
-  )
+  // 根据配置进行排序
+  results.sort((a, b) => {
+    let compareValue = 0
+    
+    switch (config.sortBy) {
+      case 'original':
+        // 按原始表格顺序
+        const orderA = groupOrder.get(a.groupValue) ?? 0
+        const orderB = groupOrder.get(b.groupValue) ?? 0
+        compareValue = orderA - orderB
+        break
+        
+      case 'nameCount':
+        // 按姓名数量排序
+        compareValue = a.names.length - b.names.length
+        break
+        
+      case 'groupValue':
+        // 按分组值排序
+        compareValue = a.groupValue.localeCompare(b.groupValue, 'zh-Hans-CN', { numeric: true })
+        break
+        
+      case 'customField':
+        // 按自定义字段的统计值排序
+        const valueA = groupCustomValues.get(a.groupValue) ?? 0
+        const valueB = groupCustomValues.get(b.groupValue) ?? 0
+        compareValue = valueA - valueB
+        break
+        
+      default:
+        compareValue = 0
+    }
+    
+    return config.sortOrder === 'asc' ? compareValue : -compareValue
+  })
   
   return results
 }

@@ -6,6 +6,7 @@ import type {
   SortByType,
   SortOrderType,
   ChartSortMode,
+  NameStatisticsSortBy,
 } from '../types'
 
 export const fieldTypeOptions: { value: FieldType; label: string }[] = [
@@ -49,6 +50,21 @@ export const chartSortModeOptions: { value: ChartSortMode; label: string }[] = [
   { value: 'valueDesc', label: '按数值降序' },
   { value: 'labelAsc', label: '按标签升序' },
   { value: 'labelDesc', label: '按标签降序' },
+]
+
+export const nameStatisticsSortByOptions: {
+  value: NameStatisticsSortBy
+  label: string
+}[] = [
+  { value: 'original', label: '按原表格顺序' },
+  { value: 'nameCount', label: '按姓名数量' },
+  { value: 'groupValue', label: '按分组字段值' },
+  { value: 'customField', label: '按指定字段统计' },
+]
+
+export const nameStatisticsSortOrderOptions: { value: 'asc' | 'desc'; label: string }[] = [
+  { value: 'asc', label: '升序' },
+  { value: 'desc', label: '降序' },
 ]
 
 export const DEFAULT_FIELD_CONFIGS: DefaultFieldConfig[] = [

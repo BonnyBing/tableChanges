@@ -8,3 +8,4 @@ export const Toast = ({ message }: ToastProps) => {
   return <div className="toast-banner">{message}</div>
 }
 
+

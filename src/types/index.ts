@@ -123,3 +123,14 @@ export interface StatisticsHistory {
   rows: StatisticsRow[]
 }
 
+export interface NameStatisticsConfig {
+  groupByField: string
+  nameField: string
+}
+
+export interface NameStatisticsRow {
+  id: string
+  groupValue: string
+  names: string[]
+}
+

@@ -144,3 +144,4 @@ export const extractChartData = (
   return { categories, values }
 }
 
+

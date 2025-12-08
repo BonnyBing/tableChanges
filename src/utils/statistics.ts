@@ -5,6 +5,8 @@ import type {
   AggregateType,
   SortByType,
   SortOrderType,
+  NameStatisticsConfig,
+  NameStatisticsRow,
 } from '../types'
 import { sanitizeValue } from './helpers'
 
@@ -222,5 +224,65 @@ export const sortChartData = (
     categories: paired.map((p) => p.category),
     values: paired.map((p) => p.value),
   }
+}
+
+/**
+ * 计算姓名统计：按分组字段统计对应的姓名列表
+ * 支持换行符拆分，自动去重
+ */
+export const calculateNameStatistics = (
+  data: ParsedSheetData,
+  config: NameStatisticsConfig
+): NameStatisticsRow[] => {
+  const groups = new Map<string, Set<string>>()
+  
+  data.rows.forEach((row) => {
+    const groupValue = sanitizeValue(row[config.groupByField])
+    const nameValueRaw = sanitizeValue(row[config.nameField])
+    
+    if (!groupValue || !nameValueRaw) return
+    
+    // 检查是否是姓名字段，如果是则支持换行符拆分
+    const enableSplit = isNameField(config.nameField)
+    const nameValues = enableSplit && (nameValueRaw.includes('\n') || nameValueRaw.includes('\r'))
+      ? splitByNewline(nameValueRaw)
+      : [nameValueRaw]
+    
+    // 获取或创建该分组的姓名集合
+    let nameSet = groups.get(groupValue)
+    if (!nameSet) {
+      nameSet = new Set<string>()
+      groups.set(groupValue, nameSet)
+    }
+    
+    // 添加所有姓名（Set自动去重）
+    nameValues.forEach((name) => {
+      if (name) {
+        nameSet!.add(name)
+      }
+    })
+  })
+  
+  // 转换为结果数组
+  const results: NameStatisticsRow[] = []
+  groups.forEach((nameSet, groupValue) => {
+    // 将Set转为数组并排序（中文排序）
+    const names = Array.from(nameSet).sort((a, b) =>
+      a.localeCompare(b, 'zh-Hans-CN', { numeric: true })
+    )
+    
+    results.push({
+      id: createStatisticsId(),
+      groupValue,
+      names,
+    })
+  })
+  
+  // 按分组值排序
+  results.sort((a, b) =>
+    a.groupValue.localeCompare(b.groupValue, 'zh-Hans-CN', { numeric: true })
+  )
+  
+  return results
 }
 

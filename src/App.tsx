@@ -20,6 +20,8 @@ import type {
   DocFormat,
   StatisticsConfig,
   StatisticsHistory,
+  NameStatisticsConfig,
+  NameStatisticsRow,
 } from './types'
 
 // 导入常量
@@ -70,12 +72,17 @@ import { buildImportedFieldLayout } from './utils/fieldBuilder'
 
 import { buildChartOption, extractChartData } from './utils/chartConfig'
 
-import { calculateStatistics, getAggregateLabel } from './utils/statistics'
+import {
+  calculateStatistics,
+  getAggregateLabel,
+  calculateNameStatistics,
+} from './utils/statistics'
 
 import { ChartSection } from './components/ChartSection'
 import { Header } from './components/Header'
 import { Toast } from './components/Toast'
 import { StatisticsSection } from './components/StatisticsSection'
+import { NameStatisticsSection } from './components/NameStatisticsSection'
 
 function App() {
   const [columns, setColumns] = useState<ImportedColumn[]>([])
@@ -135,6 +142,19 @@ function App() {
   const [statsHistory, setStatsHistory] = useState<StatisticsHistory[]>([])
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
+
+  // 姓名统计相关状态
+  const [nameStatsData, setNameStatsData] = useState<ParsedSheetData | null>(
+    null
+  )
+  const [nameStatsConfig, setNameStatsConfig] = useState<NameStatisticsConfig>({
+    groupByField: '',
+    nameField: '',
+  })
+  const [nameStatsResults, setNameStatsResults] = useState<NameStatisticsRow[]>(
+    []
+  )
+  const [nameStatsLoading, setNameStatsLoading] = useState(false)
 
   const hasData = rawRows.length > 0
   const compareKeyOptions = useMemo(() => {
@@ -1228,6 +1248,132 @@ function App() {
     }, 100)
   }
 
+  // ========== 姓名统计相关处理函数 ==========
+  const handleNameStatsFileChange = async (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setNameStatsLoading(true)
+    try {
+      const parsed = await parseFileToSheetData(file)
+      if (!parsed) {
+        showToast('未读取到有效数据，请确认表头与数据行')
+        return
+      }
+      setNameStatsData(parsed)
+
+      // 自动选择第一个字段作为分组，尝试找到姓名字段
+      if (parsed.headers.length >= 1) {
+        const nameField = parsed.headers.find(
+          (h) =>
+            h.includes('姓名') ||
+            h.toLowerCase().includes('name') ||
+            h.includes('成员') ||
+            h.includes('人员')
+        )
+        setNameStatsConfig((prev) => ({
+          ...prev,
+          groupByField: parsed.headers[0],
+          nameField: nameField || parsed.headers[1] || '',
+        }))
+      }
+
+      showToast(`已载入 ${parsed.fileName}（${parsed.rows.length} 行）`)
+    } catch (error) {
+      console.error(error)
+      showToast('文件解析失败，请检查文件格式')
+    } finally {
+      setNameStatsLoading(false)
+      event.target.value = ''
+    }
+  }
+
+  const handleGenerateNameStatistics = () => {
+    if (!nameStatsData) {
+      showToast('请先上传数据文件')
+      return
+    }
+    if (!nameStatsConfig.groupByField || !nameStatsConfig.nameField) {
+      showToast('请选择分组字段和姓名字段')
+      return
+    }
+
+    const results = calculateNameStatistics(nameStatsData, nameStatsConfig)
+    setNameStatsResults(results)
+    showToast(`已生成 ${results.length} 个分组的姓名统计`)
+  }
+
+  const resetNameStatistics = () => {
+    setNameStatsData(null)
+    setNameStatsConfig({
+      groupByField: '',
+      nameField: '',
+    })
+    setNameStatsResults([])
+    showToast('已清空统计区')
+  }
+
+  const handleCopyNameStatsTable = async () => {
+    if (!nameStatsResults.length) {
+      showToast('没有可复制的数据')
+      return
+    }
+
+    const headerRow = [
+      nameStatsConfig.groupByField,
+      nameStatsConfig.nameField,
+    ].join('\t')
+
+    const dataRows = nameStatsResults
+      .map((row) => [row.groupValue, row.names.join('、')].join('\t'))
+      .join('\n')
+
+    const tsv = `${headerRow}\n${dataRows}`
+
+    try {
+      await copyRichContent(
+        `<table><tr><th>${nameStatsConfig.groupByField}</th><th>${
+          nameStatsConfig.nameField
+        }</th></tr>${nameStatsResults
+          .map(
+            (row) =>
+              `<tr><td>${row.groupValue}</td><td>${row.names.join(
+                '、'
+              )}</td></tr>`
+          )
+          .join('')}</table>`,
+        tsv
+      )
+      showToast('复制成功')
+    } catch (error) {
+      console.error(error)
+      fallbackCopy(tsv)
+      showToast('复制为纯文本', 3200)
+    }
+  }
+
+  const handleDownloadNameStatsExcel = () => {
+    if (!nameStatsResults.length) {
+      showToast('没有可导出的数据')
+      return
+    }
+
+    const data = nameStatsResults.map((row) => ({
+      [nameStatsConfig.groupByField]: row.groupValue,
+      [nameStatsConfig.nameField]: row.names.join('、'),
+    }))
+
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(data),
+      'NameStatistics'
+    )
+    XLSX.writeFile(workbook, `name-statistics-${Date.now()}.xlsx`)
+    showToast('Excel 已下载')
+  }
+
   return (
     <div className="app-shell">
       <Header onResetWorkspace={resetWorkspace} />
@@ -2283,6 +2429,22 @@ function App() {
         onCopyTable={handleCopyStatsTable}
         onDownloadExcel={handleDownloadStatsExcel}
         onExportToChart={handleExportStatsToChart}
+      />
+
+      <NameStatisticsSection
+        nameStatsData={nameStatsData}
+        nameStatsConfig={nameStatsConfig}
+        nameStatsResults={nameStatsResults}
+        nameStatsLoading={nameStatsLoading}
+        onFileChange={handleNameStatsFileChange}
+        onConfigChange={(updates) =>
+          setNameStatsConfig((prev) => ({ ...prev, ...updates }))
+        }
+        onGenerate={handleGenerateNameStatistics}
+        onReset={resetNameStatistics}
+        onCopyTable={handleCopyNameStatsTable}
+        onDownloadExcel={handleDownloadNameStatsExcel}
+        showToast={showToast}
       />
 
       <Toast message={toastMessage} />

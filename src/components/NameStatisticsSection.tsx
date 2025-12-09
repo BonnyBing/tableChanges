@@ -212,6 +212,7 @@ export const NameStatisticsSection = ({
                     <tr>
                       <th style={{ width: 60 }}>序号</th>
                       <th>{nameStatsConfig.groupByField}</th>
+                      <th style={{ width: 100 }}>人数</th>
                       <th>
                         {nameStatsConfig.nameField}（共{' '}
                         {nameStatsResults.reduce(
@@ -227,6 +228,7 @@ export const NameStatisticsSection = ({
                       <tr key={row.id}>
                         <td>{index + 1}</td>
                         <td>{row.groupValue}</td>
+                        <td>{row.names.length}</td>
                         <td>{row.names.join('、')}</td>
                       </tr>
                     ))}
